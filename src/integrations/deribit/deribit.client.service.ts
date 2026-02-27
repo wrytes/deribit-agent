@@ -19,7 +19,17 @@ export class DeribitClientService implements OnModuleDestroy {
   constructor(private readonly prisma: PrismaService) {}
 
   async getClient(userId: string): Promise<DeribitApiClient> {
-    if (this.clients.has(userId)) return this.clients.get(userId)!;
+    const existing = this.clients.get(userId);
+    if (existing) {
+      const socket = (existing as any).socket as { readyState?: number } | undefined;
+      if (socket?.readyState === WS_OPEN) return existing;
+      // Socket is disconnected — evict the stale client and reconnect below
+      this.logger.warn(
+        `Deribit WebSocket for user ${userId} is disconnected (readyState=${socket?.readyState ?? 'none'}), reconnecting`,
+      );
+      try { existing.close(); } catch { /* ignore */ }
+      this.clients.delete(userId);
+    }
 
     const account = await this.prisma.deribitAccount.findUnique({
       where: { userId },
