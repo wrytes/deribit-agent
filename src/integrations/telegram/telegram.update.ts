@@ -722,17 +722,45 @@ export class TelegramUpdate implements OnModuleInit {
     if (step === 'allocation') {
       const allocation = parseFloat(text);
       if (isNaN(allocation) || allocation <= 0) {
-        await ctx.reply('Invalid amount. Enter a positive number, e.g. `0.05`:');
+        await ctx.reply('Invalid amount. Enter a positive number, e.g. `0.05`:', { parse_mode: 'Markdown' });
         return;
       }
 
       tc.session.pendingAction = {
         type: 'strategy_create',
-        step: 'ivr_threshold',
+        step: 'dte',
         data: { ...data, allocationBtc: allocation },
       };
       await ctx.reply(
-        'Minimum IV rank to enter? (0–100, or reply `skip` to set no threshold):',
+        'Target days-to-expiration (DTE)? e.g. `21` for 3-week options, or `skip`:',
+        { parse_mode: 'Markdown' },
+      );
+      return;
+    }
+
+    if (step === 'dte') {
+      const dte = text.toLowerCase() === 'skip' ? null : parseInt(text, 10);
+      tc.session.pendingAction = {
+        type: 'strategy_create',
+        step: 'rebalance',
+        data: { ...data, dte: dte !== null && !isNaN(dte) ? dte : null },
+      };
+      await ctx.reply(
+        'Rebalance trigger? USD move in BTC price that triggers a delta hedge — e.g. `500`, or `skip`:',
+        { parse_mode: 'Markdown' },
+      );
+      return;
+    }
+
+    if (step === 'rebalance') {
+      const rebalance = text.toLowerCase() === 'skip' ? null : parseInt(text, 10);
+      tc.session.pendingAction = {
+        type: 'strategy_create',
+        step: 'ivr_threshold',
+        data: { ...data, rebalanceTriggerUsd: rebalance !== null && !isNaN(rebalance) ? rebalance : null },
+      };
+      await ctx.reply(
+        'Minimum IV rank to enter? (0–100, or `skip` for no threshold):',
         { parse_mode: 'Markdown' },
       );
       return;
@@ -742,19 +770,35 @@ export class TelegramUpdate implements OnModuleInit {
       const { id: userId } = await this.authService.getOrCreateUser(BigInt(from.id), from.username);
 
       const ivrThreshold = text.toLowerCase() === 'skip' ? null : parseInt(text, 10);
+
+      const params: Record<string, any> = {};
+      if (data.dte !== null) params.dte = data.dte;
+      if (data.rebalanceTriggerUsd !== null) params.rebalanceTriggerUsd = data.rebalanceTriggerUsd;
+      if (ivrThreshold !== null && !isNaN(ivrThreshold)) params.ivrThreshold = ivrThreshold;
+
       const dto: CreateStrategyDto = {
         name: data.name as string,
         type: data.type as StrategyType,
         allocationBtc: data.allocationBtc as number,
-        params: ivrThreshold !== null && !isNaN(ivrThreshold) ? { ivrThreshold } : {},
+        params,
       };
 
       const strategy = await this.strategyService.create(userId, dto);
       tc.session.pendingAction = undefined;
 
-      await ctx.reply(`✅ Strategy *${strategy.name}* created in DRAFT mode.\n\nFetching AI analysis...`, {
-        parse_mode: 'Markdown',
-      });
+      // Summary of what was saved
+      const paramLines = [
+        `Type: ${strategy.type.toLowerCase().replace(/_/g, ' ')}`,
+        `Allocation: ${strategy.allocationBtc} BTC`,
+        params.dte ? `DTE: ${params.dte} days` : null,
+        params.rebalanceTriggerUsd ? `Rebalance: every $${params.rebalanceTriggerUsd} move` : null,
+        params.ivrThreshold ? `Min IVR: ${params.ivrThreshold}` : null,
+      ].filter(Boolean).join('\n');
+
+      await ctx.reply(
+        `✅ *${strategy.name}* created in DRAFT mode\n\n${paramLines}\n\nFetching market analysis...`,
+        { parse_mode: 'Markdown' },
+      );
 
       // AI entry analysis
       try {
