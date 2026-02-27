@@ -21,6 +21,9 @@ export const validationSchema = Joi.object({
 	DERIBIT_CLIENT_SECRET: Joi.string().allow('').optional(),
 	DERIBIT_BASE_URL: Joi.string().default('wss://www.deribit.com/ws/api/v2'),
 
+	// AI
+	ANTHROPIC_API_KEY: Joi.string().allow('').optional(),
+
 	// Telegram
 	TELEGRAM_BOT_TOKEN: Joi.string().allow('').optional(),
 	TELEGRAM_WEBHOOK_DOMAIN: Joi.string().allow('').optional(),

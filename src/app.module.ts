@@ -10,6 +10,7 @@ import databaseConfig from './config/database.config';
 import redisConfig from './config/redis.config';
 import telegramConfig from './config/telegram.config';
 import deribitConfig from './config/deribit.config';
+import aiConfig from './config/ai.config';
 import { validationSchema } from './config/validation.schema';
 
 // Core modules
@@ -19,6 +20,7 @@ import { HealthModule } from './core/health/health.module';
 // Integration modules
 import { TelegramModule } from './integrations/telegram/telegram.module';
 import { DeribitModule } from './integrations/deribit/deribit.module';
+import { AiModule } from './integrations/ai/ai.module';
 
 // Feature modules
 import { AuthModule } from './modules/auth/auth.module';
@@ -39,7 +41,7 @@ import { AppService } from './app.service';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      load: [appConfig, databaseConfig, redisConfig, telegramConfig, deribitConfig],
+      load: [appConfig, databaseConfig, redisConfig, telegramConfig, deribitConfig, aiConfig],
       validationSchema,
       validationOptions: {
         allowUnknown: true,
@@ -82,6 +84,7 @@ import { AppService } from './app.service';
     HealthModule,
     TelegramModule,
     DeribitModule,
+    AiModule,
     AuthModule,
     DeribitAccountModule,
     AccountModule,

@@ -5,6 +5,8 @@ import { TelegramService } from './telegram.service';
 import { TelegramUpdate } from './telegram.update';
 import { TelegramController } from './telegram.controller';
 import { AuthModule } from '../../modules/auth/auth.module';
+import { DeribitModule } from '../deribit/deribit.module';
+import { AiModule } from '../ai/ai.module';
 import { session } from 'telegraf';
 import { Redis } from 'ioredis';
 
@@ -68,6 +70,8 @@ function createIoRedisStore<T>(client: Redis, ttlSeconds: number) {
       inject: [ConfigService],
     }),
     AuthModule,
+    DeribitModule,
+    AiModule,
   ],
   controllers: [TelegramController],
   providers: [TelegramService, TelegramUpdate],
