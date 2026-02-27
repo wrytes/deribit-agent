@@ -165,7 +165,7 @@ export class AiService {
           'You are a Deribit trading assistant. Given raw portfolio data, write a concise, friendly summary ' +
           'suitable for a Telegram message. Format using Telegram Markdown v1 only: ' +
           '*bold* for section labels, `backticks` for numeric values, plain text otherwise. ' +
-          'Do NOT use ** double asterisks, # headings, or any other markdown syntax. ' +
+          'Do NOT use ** double asterisks, # headings, or markdown tables (| col |) — Telegram does not render them. For tabular data use a triple-backtick code block with space-padded columns instead.' +
           'Keep it under 200 words. Highlight equity, available funds, margin usage, and P&L. Use emojis sparingly.',
         messages: [
           {
@@ -206,7 +206,7 @@ export class AiService {
           'analysis suitable for a Telegram message. Cover: vol regime (high/low/normal), ' +
           'whether IV is elevated vs realized (premium for sellers), and any notable conditions. ' +
           'Format using Telegram Markdown v1: *bold* for labels, `backticks` for numbers. ' +
-          'Do NOT use ** double asterisks or # headings. Keep it under 200 words.',
+          'Do NOT use ** double asterisks, # headings, or markdown tables (| col |) — Telegram does not render them. For tabular data use a triple-backtick code block with space-padded columns instead. Keep it under 200 words.',
         messages: [
           {
             role: 'user',
@@ -258,7 +258,7 @@ export class AiService {
           'available strategy types from best to worst fit and explain why. ' +
           'Be direct and quantitative — reference IV rank, IV/RV ratio, and expected vol regime. ' +
           'Format using Telegram Markdown v1: *bold* for strategy names, `backticks` for numbers. ' +
-          'Do NOT use ** double asterisks or # headings. Show top 3 strategies with brief reasoning each. ' +
+          'Do NOT use ** double asterisks, # headings, or markdown tables (| col |) — Telegram does not render them. For tabular data use a triple-backtick code block with space-padded columns instead. Show top 3 strategies with brief reasoning each. ' +
           'End with a one-sentence overall market regime summary. Keep it under 250 words.',
         messages: [
           {
@@ -355,7 +355,7 @@ export class AiService {
       'Available bot commands: /market, /vol, /suggest, /portfolio, /balance, /positions, /orders, ' +
       '/strategy_create, /strategies, /connect, /api_create. ' +
       'Format responses using Telegram Markdown v1 only: *bold* for emphasis, `backticks` for numbers/code. ' +
-      'Do NOT use ** double asterisks, # headings, or MarkdownV2 syntax.',
+      'Do NOT use ** double asterisks, # headings, MarkdownV2 syntax, or markdown tables (| col |) — Telegram does not render them. For tabular data use a triple-backtick code block with space-padded columns instead.',
     ];
 
     if (context?.marketConditions?.length) {
