@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { LoggerModule } from 'nestjs-pino';
 import { EventEmitterModule } from '@nestjs/event-emitter';
+import { ScheduleModule } from '@nestjs/schedule';
 
 // Config
 import appConfig from './config/app.config';
@@ -31,6 +32,7 @@ import { WalletModule } from './modules/wallet/wallet.module';
 import { TradingModule } from './modules/trading/trading.module';
 import { MarketDataModule } from './modules/market-data/market-data.module';
 import { StrategyModule } from './modules/strategy/strategy.module';
+import { SchedulerModule } from './modules/scheduler/scheduler.module';
 
 // Common modules
 import { EventsModule } from './common/events/events.module';
@@ -75,6 +77,8 @@ import { AppService } from './app.service';
       },
     ]),
 
+    ScheduleModule.forRoot(),
+
     EventEmitterModule.forRoot({
       wildcard: false,
       delimiter: '.',
@@ -95,6 +99,7 @@ import { AppService } from './app.service';
     TradingModule,
     MarketDataModule,
     StrategyModule,
+    SchedulerModule,
     EventsModule,
   ],
   controllers: [AppController],

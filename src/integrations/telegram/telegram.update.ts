@@ -5,7 +5,7 @@ import { AuthService } from '../../modules/auth/auth.service';
 import { PrismaService } from '../../core/database/prisma.service';
 import { DeribitClientService } from '../deribit/deribit.client.service';
 import { AiService } from '../ai/ai.service';
-import { MarketDataService } from '../../modules/market-data/market-data.service';
+import { MarketDataService, OptionChainSummary } from '../../modules/market-data/market-data.service';
 import { StrategyService, CreateStrategyDto } from '../../modules/strategy/strategy.service';
 import type { TelegramContext } from './session.types';
 import { ApiKeyScope, StrategyStatus, StrategyType } from '@prisma/client';
@@ -45,8 +45,10 @@ export class TelegramUpdate implements OnModuleInit {
         { command: 'market',          description: 'Current prices, DVOL, IV rank, RV' },
         { command: 'vol',             description: 'AI volatility deep-dive analysis' },
         { command: 'suggest',         description: 'AI: best strategy for current conditions' },
-        { command: 'strategy_create', description: 'Create a new trading strategy' },
-        { command: 'strategies',      description: 'List all your strategies' },
+        { command: 'strategy_create',   description: 'Create a new trading strategy' },
+        { command: 'strategies',        description: 'List all your strategies' },
+        { command: 'strategy',          description: 'Detail view — /strategy <name>' },
+        { command: 'strategy_activate', description: 'Activate a DRAFT strategy' },
         { command: 'connect',         description: 'Link your Deribit credentials' },
         { command: 'api_create',      description: 'Generate a REST API key' },
         { command: 'api_list',        description: 'List your active API keys' },
@@ -363,6 +365,141 @@ export class TelegramUpdate implements OnModuleInit {
     lines.push('\nTip: /suggest to see which strategy fits current conditions.');
 
     await ctx.reply(lines.join('\n'), { parse_mode: 'Markdown' });
+  }
+
+  @Command('strategy')
+  async onStrategyDetail(@Ctx() ctx: Context) {
+    const tc = s(ctx);
+    const from = tc.from;
+    const message = tc.message;
+    if (!from || !message || !('text' in message)) return;
+
+    const query = (message as any).text.replace(/^\/strategy\s*/i, '').trim();
+    if (!query) {
+      await ctx.reply('Usage: /strategy <name or ID prefix>');
+      return;
+    }
+
+    const { id: userId } = await this.authService.getOrCreateUser(BigInt(from.id), from.username);
+    const all = await this.strategyService.list(userId);
+
+    // Match by name (case-insensitive) or ID prefix
+    const q = query.toLowerCase();
+    const strategy = all.find(
+      (s) => s.name.toLowerCase().includes(q) || s.id.startsWith(q),
+    );
+
+    if (!strategy) {
+      await ctx.reply(`No strategy matching "${query}". Use /strategies to see all.`);
+      return;
+    }
+
+    const params = strategy.params as Record<string, any>;
+    const latest = strategy.snapshots?.[0];
+    const statusEmoji = { DRAFT: '📝', ACTIVE: '✅', PAUSED: '⏸', CLOSED: '🔴' }[strategy.status] ?? '';
+
+    const paramLines = [
+      params.dte              ? `DTE target: \`${params.dte}d\`` : null,
+      params.rebalanceTriggerUsd ? `Rebalance: every \`$${params.rebalanceTriggerUsd}\` move` : null,
+      params.ivrThreshold     ? `Min IV rank: \`${params.ivrThreshold}\`` : null,
+    ].filter(Boolean).join('\n');
+
+    const snapshotLines = latest
+      ? [
+          `BTC price: \`$${Number(latest.btcIndexPrice).toLocaleString()}\``,
+          latest.delta    != null ? `Delta: \`${Number(latest.delta).toFixed(4)}\`` : null,
+          latest.theta    != null ? `Theta: \`${Number(latest.theta).toFixed(6)}\`` : null,
+          latest.vega     != null ? `Vega: \`${Number(latest.vega).toFixed(6)}\`` : null,
+          latest.unrealizedPnlBtc != null
+            ? `Unrealized P&L: \`${Number(latest.unrealizedPnlBtc) >= 0 ? '+' : ''}${Number(latest.unrealizedPnlBtc).toFixed(6)} BTC\``
+            : null,
+        ].filter(Boolean).join('\n')
+      : '_No snapshots yet — activate strategy and wait for the hourly run._';
+
+    const legLines =
+      strategy.legs.length > 0
+        ? strategy.legs
+            .map((l) => `\`${l.instrumentName}\` ${l.direction} ×${l.quantity} @ \`${l.openPrice}\``)
+            .join('\n')
+        : '_No legs linked yet._';
+
+    const lines = [
+      `${statusEmoji} *${strategy.name}*`,
+      `Type: ${strategy.type.toLowerCase().replace(/_/g, ' ')} | Allocation: \`${strategy.allocationBtc} BTC\``,
+      paramLines ? `\n*Parameters*\n${paramLines}` : '',
+      `\n*Latest Snapshot*\n${snapshotLines}`,
+      `\n*Legs* (${strategy.legs.length})\n${legLines}`,
+    ].filter(Boolean).join('\n');
+
+    await ctx.reply(lines, { parse_mode: 'Markdown' });
+
+    // AI commentary using live context
+    try {
+      const context = await this.buildAiContext(userId);
+      const commentary = await this.aiService.analyzeStrategy(
+        {
+          name: strategy.name,
+          type: strategy.type,
+          status: strategy.status,
+          allocationBtc: Number(strategy.allocationBtc),
+          params,
+          legs: strategy.legs.map((l) => ({
+            instrumentName: l.instrumentName,
+            direction: l.direction,
+            quantity: Number(l.quantity),
+            openPrice: Number(l.openPrice),
+          })),
+          latestSnapshot: latest
+            ? {
+                delta: latest.delta ? Number(latest.delta) : undefined,
+                theta: latest.theta ? Number(latest.theta) : undefined,
+                vega:  latest.vega  ? Number(latest.vega)  : undefined,
+                unrealizedPnlBtc: latest.unrealizedPnlBtc ? Number(latest.unrealizedPnlBtc) : undefined,
+                btcIndexPrice: Number(latest.btcIndexPrice),
+              }
+            : null,
+        },
+        {
+          indexPrice: context.marketConditions?.find((c) => c.currency === 'BTC')?.indexPrice ?? 0,
+          ivRank: context.marketConditions?.find((c) => c.currency === 'BTC')?.ivRank ?? null,
+          dvolIndex: context.marketConditions?.find((c) => c.currency === 'BTC')?.dvolIndex ?? null,
+        },
+      );
+      this.seedHistory(tc, `Tell me about my strategy: ${strategy.name}`, commentary);
+      await this.safeReply(ctx, `🤖 *AI Commentary*\n\n${commentary}`);
+    } catch (err) {
+      this.logger.warn(`Strategy AI commentary failed: ${err.message}`);
+    }
+  }
+
+  @Command('strategy_activate')
+  async onStrategyActivate(@Ctx() ctx: Context) {
+    const tc = s(ctx);
+    const from = tc.from;
+    const message = tc.message;
+    if (!from || !message || !('text' in message)) return;
+
+    const query = (message as any).text.replace(/^\/strategy_activate\s*/i, '').trim();
+    if (!query) {
+      await ctx.reply('Usage: /strategy_activate <name or ID prefix>');
+      return;
+    }
+
+    const { id: userId } = await this.authService.getOrCreateUser(BigInt(from.id), from.username);
+    const all = await this.strategyService.list(userId);
+    const q = query.toLowerCase();
+    const strategy = all.find((s) => s.name.toLowerCase().includes(q) || s.id.startsWith(q));
+
+    if (!strategy) {
+      await ctx.reply(`No strategy matching "${query}". Use /strategies to see all.`);
+      return;
+    }
+
+    await this.strategyService.activate(userId, strategy.id);
+    await ctx.reply(
+      `✅ *${strategy.name}* is now *ACTIVE*\n\nThe scheduler will check it every 15 minutes and take hourly snapshots.`,
+      { parse_mode: 'Markdown' },
+    );
   }
 
   @Command('strategy_create')
@@ -861,21 +998,45 @@ export class TelegramUpdate implements OnModuleInit {
 
   /** Fetch live market + strategy context for the system prompt. */
   private async buildAiContext(userId: string) {
-    const [conditions, strategies] = await Promise.allSettled([
+    const [conditionsRes, strategiesRes] = await Promise.allSettled([
       this.marketDataService.getAllConditions(),
       this.strategyService.list(userId),
     ]);
+
+    const conditions = conditionsRes.status === 'fulfilled' ? conditionsRes.value : [];
+    const strategies = strategiesRes.status === 'fulfilled' ? strategiesRes.value : [];
+
+    // Fetch option chains for strategies that specify a target DTE
+    const btcPrice = conditions.find((c) => c.currency === 'BTC')?.indexPrice ?? 0;
+    const optionChains: OptionChainSummary[] = [];
+
+    if (btcPrice > 0) {
+      const dtesToFetch = [
+        ...new Set(
+          strategies
+            .map((s) => (s.params as any)?.dte as number | undefined)
+            .filter((d): d is number => typeof d === 'number' && d > 0),
+        ),
+      ].slice(0, 3); // cap at 3 DTE queries
+
+      const chainResults = await Promise.allSettled(
+        dtesToFetch.map((dte) => this.marketDataService.getOptionChain('BTC', dte, btcPrice)),
+      );
+      for (const r of chainResults) {
+        if (r.status === 'fulfilled' && r.value) optionChains.push(r.value);
+      }
+    }
+
     return {
-      marketConditions: conditions.status === 'fulfilled' ? conditions.value : undefined,
-      activeStrategies:
-        strategies.status === 'fulfilled'
-          ? strategies.value.map((s) => ({
-              name: s.name,
-              type: s.type as string,
-              status: s.status as string,
-              allocationBtc: Number(s.allocationBtc),
-            }))
-          : [],
+      marketConditions: conditions,
+      activeStrategies: strategies.map((s) => ({
+        name: s.name,
+        type: s.type as string,
+        status: s.status as string,
+        allocationBtc: Number(s.allocationBtc),
+        params: s.params,
+      })),
+      optionChains,
     };
   }
 

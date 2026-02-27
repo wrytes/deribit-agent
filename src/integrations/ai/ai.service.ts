@@ -343,6 +343,14 @@ export class AiService {
         type: string;
         status: string;
         allocationBtc: number;
+        params?: any;
+      }>;
+      optionChains?: Array<{
+        currency: string;
+        expiry: string;
+        actualDte: number;
+        atm: number;
+        nearbyStrikes: Array<{ strike: number; call?: string; put?: string }>;
       }>;
     },
   ): Promise<string> {
@@ -379,11 +387,29 @@ export class AiService {
 
     if (context?.activeStrategies?.length) {
       const strats = context.activeStrategies
-        .map((s) => `${s.name} (${s.type}, ${s.status}, ${s.allocationBtc} BTC)`)
+        .map((s) => {
+          const p = s.params as any;
+          const extra = [
+            p?.dte ? `DTE=${p.dte}d` : null,
+            p?.rebalanceTriggerUsd ? `rebalance=$${p.rebalanceTriggerUsd}` : null,
+            p?.ivrThreshold ? `minIVR=${p.ivrThreshold}` : null,
+          ].filter(Boolean).join(' ');
+          return `${s.name} (${s.type} ${s.status} ${s.allocationBtc}BTC${extra ? ' ' + extra : ''})`;
+        })
         .join('; ');
-      systemParts.push(`\nUser's active strategies: ${strats}`);
+      systemParts.push(`\nUser's strategies: ${strats}`);
     } else if (context?.activeStrategies) {
-      systemParts.push('\nUser has no active strategies yet.');
+      systemParts.push('\nUser has no strategies yet.');
+    }
+
+    if (context?.optionChains?.length) {
+      const chains = context.optionChains.map((c) => {
+        const strikeList = c.nearbyStrikes
+          .map((s) => s.strike.toLocaleString())
+          .join(', ');
+        return `${c.currency} ${c.expiry} (${c.actualDte}d): ATM=${c.atm.toLocaleString()} strikes=[${strikeList}]`;
+      }).join('; ');
+      systemParts.push(`\nLive option chain: ${chains}`);
     }
 
     try {

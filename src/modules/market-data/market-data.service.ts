@@ -2,6 +2,15 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { createDeribitClientPublic, DeribitApiClient } from '@wrytlabs/deribit-api-client';
 import { PrismaService } from '../../core/database/prisma.service';
 
+export interface OptionChainSummary {
+  currency: string;
+  expiry: string;           // e.g. '28MAR25'
+  expiryTimestamp: number;
+  actualDte: number;
+  atm: number;              // ATM strike
+  nearbyStrikes: Array<{ strike: number; call?: string; put?: string }>;
+}
+
 const CACHE_TTL_MS = 30_000; // 30s for live prices
 const DVOL_RESOLUTION = '86400'; // daily candles
 const IV_RANK_DAYS = 365;
@@ -100,6 +109,99 @@ export class MarketDataService implements OnModuleInit {
       btc.status === 'fulfilled' ? btc.value : this.emptyConditions('BTC'),
       eth.status === 'fulfilled' ? eth.value : this.emptyConditions('ETH'),
     ];
+  }
+
+  /**
+   * Fetch the option chain for the nearest expiry matching targetDteDays.
+   * Returns the expiry date, actual DTE, ATM strike, and nearby strikes ±20%.
+   */
+  async getOptionChain(
+    currency: 'BTC' | 'ETH',
+    targetDteDays: number,
+    currentPrice: number,
+  ): Promise<OptionChainSummary | null> {
+    const key = `optchain_${currency}_${targetDteDays}`;
+    const cached = this.fromCache<OptionChainSummary>(key);
+    if (cached !== null) return cached;
+
+    const res = await this.client.market.getInstruments({
+      currency,
+      kind: 'option',
+      expired: false,
+    });
+
+    if (!('result' in res) || !Array.isArray(res.result)) return null;
+
+    const now = Date.now();
+    const targetMs = targetDteDays * 86_400_000;
+
+    // Group by expiry, find the one whose DTE is closest to target
+    const expiries = new Map<number, typeof res.result>();
+    for (const inst of res.result) {
+      if (!inst.is_active) continue;
+      const bucket = expiries.get(inst.expiration_timestamp) ?? [];
+      bucket.push(inst);
+      expiries.set(inst.expiration_timestamp, bucket);
+    }
+
+    let bestExpiry = 0;
+    let bestDiff = Infinity;
+    for (const ts of expiries.keys()) {
+      const dte = (ts - now) / 86_400_000;
+      if (dte < 1) continue; // skip expired/today
+      const diff = Math.abs(dte - targetDteDays);
+      if (diff < bestDiff) { bestDiff = diff; bestExpiry = ts; }
+    }
+
+    if (!bestExpiry) return null;
+
+    const instruments = expiries.get(bestExpiry)!;
+    const actualDte = Math.round((bestExpiry - now) / 86_400_000);
+
+    // Parse expiry label from first instrument name (e.g. BTC-28MAR25-70000-C → 28MAR25)
+    const expiryLabel = instruments[0].instrument_name.split('-')[1] ?? '';
+
+    // Collect strikes within ±25% of current price
+    const lowerBound = currentPrice * 0.75;
+    const upperBound = currentPrice * 1.25;
+
+    const strikesMap = new Map<
+      number,
+      { call?: string; put?: string }
+    >();
+
+    for (const inst of instruments) {
+      const strike = inst.strike;
+      if (!strike || strike < lowerBound || strike > upperBound) continue;
+      const entry = strikesMap.get(strike) ?? {};
+      if (inst.option_type === 'call') entry.call = inst.instrument_name;
+      if (inst.option_type === 'put')  entry.put  = inst.instrument_name;
+      strikesMap.set(strike, entry);
+    }
+
+    // ATM = nearest strike to current price
+    let atm = 0;
+    let atmDiff = Infinity;
+    for (const strike of strikesMap.keys()) {
+      const d = Math.abs(strike - currentPrice);
+      if (d < atmDiff) { atmDiff = d; atm = strike; }
+    }
+
+    const nearbyStrikes = Array.from(strikesMap.entries())
+      .sort(([a], [b]) => a - b)
+      .map(([strike, v]) => ({ strike, call: v.call, put: v.put }));
+
+    const summary: OptionChainSummary = {
+      currency,
+      expiry: expiryLabel,
+      expiryTimestamp: bestExpiry,
+      actualDte,
+      atm,
+      nearbyStrikes,
+    };
+
+    this.toCache(key, summary, 5 * 60_000); // cache 5 min
+    return summary;
   }
 
   /** Persist a market snapshot for historical IV rank tracking. */
