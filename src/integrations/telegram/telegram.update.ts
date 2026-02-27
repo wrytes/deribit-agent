@@ -285,7 +285,7 @@ export class TelegramUpdate implements OnModuleInit {
       const openOrdersCount = 'result' in ordersRes ? ordersRes.result.length : 0;
 
       const summary = await this.aiService.summarizePortfolio({ summaries: accountData, openOrdersCount });
-      await ctx.reply(summary);
+      await ctx.reply(summary, { parse_mode: 'Markdown' });
     } catch (err) {
       this.logger.error(`Portfolio error: ${err.message}`);
       await ctx.reply(`❌ Error: ${err.message}`);
@@ -440,7 +440,7 @@ export class TelegramUpdate implements OnModuleInit {
     const response = await this.aiService.ask(tc.session.askHistory);
     tc.session.askHistory.push({ role: 'assistant', content: response });
 
-    await ctx.reply(response);
+    await ctx.reply(response, { parse_mode: 'Markdown' });
   }
 
   // ---------------------------------------------------------------------------
@@ -550,7 +550,7 @@ export class TelegramUpdate implements OnModuleInit {
         await ctx.reply('🤔 Thinking...');
         const answer = await this.aiService.ask(tc.session.askHistory);
         tc.session.askHistory.push({ role: 'assistant', content: answer });
-        await ctx.reply(answer);
+        await ctx.reply(answer, { parse_mode: 'Markdown' });
         break;
       }
       default:

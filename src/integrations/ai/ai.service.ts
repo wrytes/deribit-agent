@@ -163,8 +163,10 @@ export class AiService {
         max_tokens: 512,
         system:
           'You are a Deribit trading assistant. Given raw portfolio data, write a concise, friendly summary ' +
-          'suitable for a Telegram message. Use clear formatting with key metrics. Keep it under 250 words. ' +
-          'Highlight equity, available funds, margin usage, and any notable P&L. Use emojis sparingly.',
+          'suitable for a Telegram message. Format using Telegram Markdown v1 only: ' +
+          '*bold* for section labels, `backticks` for numeric values, plain text otherwise. ' +
+          'Do NOT use ** double asterisks, # headings, or any other markdown syntax. ' +
+          'Keep it under 200 words. Highlight equity, available funds, margin usage, and P&L. Use emojis sparingly.',
         messages: [
           {
             role: 'user',
@@ -196,7 +198,9 @@ export class AiService {
         system:
           'You are a knowledgeable Deribit trading assistant. Help users understand their portfolio, ' +
           'trading strategies, options, perpetuals, margin, and Deribit-specific concepts. ' +
-          'Be concise and practical. Available bot commands: /portfolio, /positions, /orders, /balance, /ask, /connect, /api_create.',
+          'Be concise and practical. Available bot commands: /portfolio, /positions, /orders, /balance, /ask, /connect, /api_create. ' +
+          'Format responses using Telegram Markdown v1 only: *bold* for emphasis, `backticks` for code/values. ' +
+          'Do NOT use ** double asterisks, # headings, or any other markdown syntax.',
         messages: conversationHistory,
       });
 
