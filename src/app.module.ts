@@ -29,6 +29,8 @@ import { AccountModule } from './modules/account/account.module';
 import { MarketModule } from './modules/market/market.module';
 import { WalletModule } from './modules/wallet/wallet.module';
 import { TradingModule } from './modules/trading/trading.module';
+import { MarketDataModule } from './modules/market-data/market-data.module';
+import { StrategyModule } from './modules/strategy/strategy.module';
 
 // Common modules
 import { EventsModule } from './common/events/events.module';
@@ -91,6 +93,8 @@ import { AppService } from './app.service';
     MarketModule,
     WalletModule,
     TradingModule,
+    MarketDataModule,
+    StrategyModule,
     EventsModule,
   ],
   controllers: [AppController],

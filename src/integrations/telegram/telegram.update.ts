@@ -5,8 +5,10 @@ import { AuthService } from '../../modules/auth/auth.service';
 import { PrismaService } from '../../core/database/prisma.service';
 import { DeribitClientService } from '../deribit/deribit.client.service';
 import { AiService } from '../ai/ai.service';
+import { MarketDataService } from '../../modules/market-data/market-data.service';
+import { StrategyService, CreateStrategyDto } from '../../modules/strategy/strategy.service';
 import type { TelegramContext } from './session.types';
-import { ApiKeyScope } from '@prisma/client';
+import { ApiKeyScope, StrategyStatus, StrategyType } from '@prisma/client';
 import { Currency } from '@wrytlabs/deribit-api-client';
 
 function s(ctx: Context): TelegramContext {
@@ -26,6 +28,8 @@ export class TelegramUpdate implements OnModuleInit {
     private readonly prisma: PrismaService,
     private readonly deribitClientService: DeribitClientService,
     private readonly aiService: AiService,
+    private readonly marketDataService: MarketDataService,
+    private readonly strategyService: StrategyService,
   ) {}
 
   async onModuleInit() {
@@ -38,10 +42,15 @@ export class TelegramUpdate implements OnModuleInit {
         { command: 'positions',  description: 'Open positions' },
         { command: 'orders',     description: 'Open orders' },
         { command: 'ask',        description: 'Ask the AI assistant a question' },
-        { command: 'connect',    description: 'Link your Deribit credentials' },
-        { command: 'api_create', description: 'Generate a REST API key' },
-        { command: 'api_list',   description: 'List your active API keys' },
-        { command: 'api_revoke', description: 'Revoke an API key — /api_revoke <keyId>' },
+        { command: 'market',          description: 'Current prices, DVOL, IV rank, RV' },
+        { command: 'vol',             description: 'AI volatility deep-dive analysis' },
+        { command: 'suggest',         description: 'AI: best strategy for current conditions' },
+        { command: 'strategy_create', description: 'Create a new trading strategy' },
+        { command: 'strategies',      description: 'List all your strategies' },
+        { command: 'connect',         description: 'Link your Deribit credentials' },
+        { command: 'api_create',      description: 'Generate a REST API key' },
+        { command: 'api_list',        description: 'List your active API keys' },
+        { command: 'api_revoke',      description: 'Revoke an API key — /api_revoke <keyId>' },
       ]);
       this.logger.log('Telegram command menu registered');
     } catch (err) {
@@ -67,16 +76,27 @@ export class TelegramUpdate implements OnModuleInit {
 
     await ctx.reply(
       text +
-        '/status — your account & Deribit connection\n' +
-        '/connect — link Deribit credentials\n' +
+        '📊 *Market & Analysis*\n' +
+        '/market — prices, DVOL, IV rank, RV\n' +
+        '/vol — AI volatility analysis\n' +
+        '/suggest — best strategy for current conditions\n\n' +
+        '🗂 *Strategies*\n' +
+        '/strategy\\_create — create a new strategy\n' +
+        '/strategies — list all strategies\n\n' +
+        '💼 *Portfolio*\n' +
         '/portfolio — AI portfolio summary\n' +
-        '/balance — quick balance overview\n' +
+        '/balance — quick balances\n' +
         '/positions — open positions\n' +
-        '/orders — open orders\n' +
-        '/ask <question> — AI trading assistant\n' +
-        '/api_create — generate API key\n' +
-        '/api_list — list API keys\n' +
-        '/api_revoke <keyId> — revoke an API key',
+        '/orders — open orders\n\n' +
+        '🤖 *AI Assistant*\n' +
+        '/ask <question> — trading Q&A\n\n' +
+        '⚙️ *Account*\n' +
+        '/status — account & connection info\n' +
+        '/connect — link Deribit credentials\n' +
+        '/api\\_create — generate API key\n' +
+        '/api\\_list — list API keys\n' +
+        '/api\\_revoke <keyId> — revoke a key',
+      { parse_mode: 'Markdown' },
     );
   }
 
@@ -231,6 +251,120 @@ export class TelegramUpdate implements OnModuleInit {
     } catch (err) {
       await ctx.reply(`❌ ${err.message}`);
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Market analysis commands
+  // ---------------------------------------------------------------------------
+
+  @Command('market')
+  async onMarket(@Ctx() ctx: Context) {
+    await ctx.reply('📡 Fetching market data...');
+    try {
+      const all = await this.marketDataService.getAllConditions();
+      const lines: string[] = ['📊 *Market Overview*\n'];
+
+      for (const c of all) {
+        if (c.indexPrice === 0) continue;
+        lines.push(
+          `*${c.currency}*\n` +
+          `  Price: \`$${c.indexPrice.toLocaleString()}\`\n` +
+          `  DVOL: \`${c.dvolIndex?.toFixed(1) ?? 'n/a'}\`\n` +
+          `  IV Rank: \`${c.ivRank?.toFixed(1) ?? 'n/a'}/100\`\n` +
+          `  IV Percentile: \`${c.ivPercentile?.toFixed(1) ?? 'n/a'}%\`\n` +
+          `  RV 30d: \`${c.rv30d ? (c.rv30d * 100).toFixed(1) + '%' : 'n/a'}\`\n` +
+          `  IV/RV: \`${c.ivOverRv?.toFixed(2) ?? 'n/a'}\` ${ivOverRvLabel(c.ivOverRv)}`,
+        );
+      }
+
+      await ctx.reply(lines.join('\n'), { parse_mode: 'Markdown' });
+    } catch (err) {
+      await ctx.reply(`❌ Error: ${err.message}`);
+    }
+  }
+
+  @Command('vol')
+  async onVol(@Ctx() ctx: Context) {
+    await ctx.reply('📡 Fetching volatility data...');
+    try {
+      const all = await this.marketDataService.getAllConditions();
+      const analysis = await this.aiService.analyzeMarketConditions(all);
+      await ctx.reply(`📈 *Volatility Analysis*\n\n${analysis}`, { parse_mode: 'Markdown' });
+    } catch (err) {
+      await ctx.reply(`❌ Error: ${err.message}`);
+    }
+  }
+
+  @Command('suggest')
+  async onSuggest(@Ctx() ctx: Context) {
+    await ctx.reply('🤖 Analyzing market conditions for strategy fit...');
+    try {
+      const all = await this.marketDataService.getAllConditions();
+      const suggestion = await this.aiService.suggestStrategies(all);
+      await ctx.reply(`💡 *Strategy Suggestions*\n\n${suggestion}`, { parse_mode: 'Markdown' });
+    } catch (err) {
+      await ctx.reply(`❌ Error: ${err.message}`);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Strategy management commands
+  // ---------------------------------------------------------------------------
+
+  @Command('strategies')
+  async onStrategies(@Ctx() ctx: Context) {
+    const from = s(ctx).from;
+    if (!from) return;
+
+    const { id: userId } = await this.authService.getOrCreateUser(BigInt(from.id), from.username);
+    const strategies = await this.strategyService.list(userId);
+
+    if (strategies.length === 0) {
+      await ctx.reply(
+        '📭 No strategies yet. Use /strategy\\_create to create one.',
+        { parse_mode: 'Markdown' },
+      );
+      return;
+    }
+
+    const lines: string[] = [`🗂 *Strategies* (${strategies.length})\n`];
+    for (const strat of strategies) {
+      const latest = strat.snapshots[0];
+      const pnlBtc = latest?.unrealizedPnlBtc ?? null;
+      const pnlUsd =
+        pnlBtc !== null && latest?.btcIndexPrice
+          ? (Number(pnlBtc) * Number(latest.btcIndexPrice)).toFixed(2)
+          : null;
+
+      const statusEmoji = { DRAFT: '📝', ACTIVE: '✅', PAUSED: '⏸', CLOSED: '🔴' }[strat.status] ?? '';
+      lines.push(
+        `${statusEmoji} *${strat.name}* (${strat.type.toLowerCase().replace('_', ' ')})\n` +
+        `  Allocation: \`${strat.allocationBtc} BTC\`\n` +
+        `  Legs: ${strat.legs.length} open\n` +
+        (pnlBtc !== null
+          ? `  P&L: \`${Number(pnlBtc) >= 0 ? '+' : ''}${Number(pnlBtc).toFixed(6)} BTC\`` +
+            (pnlUsd ? ` (\`$${pnlUsd}\`)` : '')
+          : '  P&L: n/a') +
+        `\n  ID: \`${strat.id.slice(0, 8)}\``,
+      );
+    }
+    lines.push('\nTip: /suggest to see which strategy fits current conditions.');
+
+    await ctx.reply(lines.join('\n'), { parse_mode: 'Markdown' });
+  }
+
+  @Command('strategy_create')
+  async onStrategyCreate(@Ctx() ctx: Context) {
+    const tc = s(ctx);
+    const types = Object.values(StrategyType)
+      .map((t, i) => `${i + 1}. ${t.toLowerCase().replace(/_/g, ' ')}`)
+      .join('\n');
+
+    tc.session.pendingAction = { type: 'strategy_create', step: 'type' };
+    await ctx.reply(
+      `📝 *Create a Strategy*\n\nChoose a type:\n${types}\n\nReply with the number or name:`,
+      { parse_mode: 'Markdown' },
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -463,6 +597,10 @@ export class TelegramUpdate implements OnModuleInit {
       await this.handleConnectWizard(ctx, tc, from, text);
       return;
     }
+    if (session?.pendingAction?.type === 'strategy_create') {
+      await this.handleStrategyWizard(ctx, tc, from, text);
+      return;
+    }
 
     const userId = await this.resolveUserId(BigInt(from.id), from.username);
     if (!userId) return;
@@ -513,6 +651,102 @@ export class TelegramUpdate implements OnModuleInit {
       tc.session.pendingAction = undefined;
       await ctx.reply('✅ Connected! Your Deribit credentials are saved.\n\nTry /portfolio or /balance.');
       this.logger.log(`User ${userId} saved Deribit credentials via Telegram`);
+    }
+  }
+
+  private async handleStrategyWizard(
+    ctx: Context,
+    tc: TelegramContext,
+    from: NonNullable<typeof tc.from>,
+    text: string,
+  ) {
+    const step = tc.session.pendingAction?.step;
+    const data = tc.session.pendingAction?.data ?? {};
+    const types = Object.values(StrategyType);
+
+    if (step === 'type') {
+      // Accept number (1-8) or type name
+      const idx = parseInt(text, 10);
+      let chosen: StrategyType | undefined;
+      if (!isNaN(idx) && idx >= 1 && idx <= types.length) {
+        chosen = types[idx - 1];
+      } else {
+        chosen = types.find(
+          (t) => t.toLowerCase() === text.toUpperCase() || t.toLowerCase().replace(/_/g, ' ') === text.toLowerCase(),
+        );
+      }
+
+      if (!chosen) {
+        await ctx.reply('Unknown type. Reply with a number 1–8 or the strategy name.');
+        return;
+      }
+
+      tc.session.pendingAction = { type: 'strategy_create', step: 'name', data: { type: chosen } };
+      await ctx.reply(`*${chosen.toLowerCase().replace(/_/g, ' ')}* selected.\n\nGive this strategy a name:`, {
+        parse_mode: 'Markdown',
+      });
+      return;
+    }
+
+    if (step === 'name') {
+      tc.session.pendingAction = { type: 'strategy_create', step: 'allocation', data: { ...data, name: text } };
+      await ctx.reply('How much BTC to allocate? (e.g. `0.05`):', { parse_mode: 'Markdown' });
+      return;
+    }
+
+    if (step === 'allocation') {
+      const allocation = parseFloat(text);
+      if (isNaN(allocation) || allocation <= 0) {
+        await ctx.reply('Invalid amount. Enter a positive number, e.g. `0.05`:');
+        return;
+      }
+
+      tc.session.pendingAction = {
+        type: 'strategy_create',
+        step: 'ivr_threshold',
+        data: { ...data, allocationBtc: allocation },
+      };
+      await ctx.reply(
+        'Minimum IV rank to enter? (0–100, or reply `skip` to set no threshold):',
+        { parse_mode: 'Markdown' },
+      );
+      return;
+    }
+
+    if (step === 'ivr_threshold') {
+      const { id: userId } = await this.authService.getOrCreateUser(BigInt(from.id), from.username);
+
+      const ivrThreshold = text.toLowerCase() === 'skip' ? null : parseInt(text, 10);
+      const dto: CreateStrategyDto = {
+        name: data.name as string,
+        type: data.type as StrategyType,
+        allocationBtc: data.allocationBtc as number,
+        params: ivrThreshold !== null && !isNaN(ivrThreshold) ? { ivrThreshold } : {},
+      };
+
+      const strategy = await this.strategyService.create(userId, dto);
+      tc.session.pendingAction = undefined;
+
+      await ctx.reply(`✅ Strategy *${strategy.name}* created in DRAFT mode.\n\nFetching AI analysis...`, {
+        parse_mode: 'Markdown',
+      });
+
+      // AI entry analysis
+      try {
+        const conditions = await this.marketDataService.getAllConditions();
+        const suggestion = await this.aiService.suggestStrategies(conditions);
+        await ctx.reply(
+          `💡 *Market conditions for your strategy*\n\n${suggestion}`,
+          { parse_mode: 'Markdown' },
+        );
+      } catch (err) {
+        this.logger.warn(`AI analysis failed: ${err.message}`);
+      }
+
+      await ctx.reply(
+        `ID: \`${strategy.id}\`\n\nUse /strategies to see all your strategies.`,
+        { parse_mode: 'Markdown' },
+      );
     }
   }
 
@@ -576,6 +810,15 @@ export class TelegramUpdate implements OnModuleInit {
 // ---------------------------------------------------------------------------
 // Utility
 // ---------------------------------------------------------------------------
+
+/** Label the IV/RV ratio for quick visual scanning. */
+function ivOverRvLabel(ratio: number | null): string {
+  if (ratio === null) return '';
+  if (ratio >= 1.5) return '🔥 premium elevated';
+  if (ratio >= 1.1) return '📈 slight premium';
+  if (ratio >= 0.9) return '⚖️ fair value';
+  return '📉 IV cheap';
+}
 
 function timeAgo(date: Date): string {
   const seconds = Math.floor((Date.now() - date.getTime()) / 1000);

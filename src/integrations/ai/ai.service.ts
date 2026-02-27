@@ -186,6 +186,141 @@ export class AiService {
   }
 
   /**
+   * Produce a Telegram-formatted analysis of current market conditions.
+   */
+  async analyzeMarketConditions(conditions: {
+    currency: string;
+    indexPrice: number;
+    dvolIndex: number | null;
+    rv30d: number | null;
+    ivRank: number | null;
+    ivPercentile: number | null;
+    ivOverRv: number | null;
+  }[]): Promise<string> {
+    try {
+      const response = await this.client.messages.create({
+        model: MODEL,
+        max_tokens: 600,
+        system:
+          'You are a Deribit volatility analyst. Given current market metrics, write a concise ' +
+          'analysis suitable for a Telegram message. Cover: vol regime (high/low/normal), ' +
+          'whether IV is elevated vs realized (premium for sellers), and any notable conditions. ' +
+          'Format using Telegram Markdown v1: *bold* for labels, `backticks` for numbers. ' +
+          'Do NOT use ** double asterisks or # headings. Keep it under 200 words.',
+        messages: [
+          {
+            role: 'user',
+            content: `Analyze these market conditions:\n${JSON.stringify(conditions, null, 2)}`,
+          },
+        ],
+      });
+
+      const text = response.content.find((c) => c.type === 'text') as
+        | Anthropic.TextBlock
+        | undefined;
+      return text?.text ?? 'Unable to generate market analysis.';
+    } catch (error) {
+      this.logger.error(`Failed to analyze market conditions: ${error.message}`);
+      return 'Unable to generate market analysis.';
+    }
+  }
+
+  /**
+   * Rank all strategy types for the current market conditions and return
+   * a Telegram-formatted recommendation with reasoning.
+   */
+  async suggestStrategies(conditions: {
+    currency: string;
+    indexPrice: number;
+    dvolIndex: number | null;
+    rv30d: number | null;
+    ivRank: number | null;
+    ivPercentile: number | null;
+    ivOverRv: number | null;
+  }[]): Promise<string> {
+    const strategyTypes = [
+      'IRON_CONDOR — non-directional, sell both sides (best when IV high, low expected move)',
+      'STRANGLE — sell OTM put + call (high IV, wide range ok)',
+      'STRADDLE — sell ATM put + call (very high IV, expect pin)',
+      'COVERED_CALL — hold BTC + sell call (mild bullish, elevated call IV)',
+      'CASH_SECURED_PUT — sell put + hold collateral (bullish, want to accumulate BTC)',
+      'WHEEL — CSP → covered call cycle (range-bound market)',
+      'DELTA_NEUTRAL — keep delta ~0 while collecting theta (any IV, requires active hedging)',
+      'CUSTOM — user-defined multi-leg',
+    ];
+
+    try {
+      const response = await this.client.messages.create({
+        model: MODEL,
+        max_tokens: 800,
+        system:
+          'You are a Deribit options strategy advisor. Given current market conditions, rank the ' +
+          'available strategy types from best to worst fit and explain why. ' +
+          'Be direct and quantitative — reference IV rank, IV/RV ratio, and expected vol regime. ' +
+          'Format using Telegram Markdown v1: *bold* for strategy names, `backticks` for numbers. ' +
+          'Do NOT use ** double asterisks or # headings. Show top 3 strategies with brief reasoning each. ' +
+          'End with a one-sentence overall market regime summary. Keep it under 250 words.',
+        messages: [
+          {
+            role: 'user',
+            content:
+              `Market conditions:\n${JSON.stringify(conditions, null, 2)}\n\n` +
+              `Available strategies:\n${strategyTypes.join('\n')}`,
+          },
+        ],
+      });
+
+      const text = response.content.find((c) => c.type === 'text') as
+        | Anthropic.TextBlock
+        | undefined;
+      return text?.text ?? 'Unable to generate strategy suggestions.';
+    } catch (error) {
+      this.logger.error(`Failed to suggest strategies: ${error.message}`);
+      return 'Unable to generate strategy suggestions.';
+    }
+  }
+
+  /**
+   * Generate AI commentary on a specific strategy's current state.
+   */
+  async analyzeStrategy(strategy: {
+    name: string;
+    type: string;
+    status: string;
+    allocationBtc: number;
+    params: any;
+    legs: Array<{ instrumentName: string; direction: string; quantity: number; openPrice: number }>;
+    latestSnapshot?: { delta?: number; theta?: number; vega?: number; unrealizedPnlBtc?: number; btcIndexPrice: number } | null;
+  }, currentConditions: { indexPrice: number; ivRank: number | null; dvolIndex: number | null }): Promise<string> {
+    try {
+      const response = await this.client.messages.create({
+        model: MODEL,
+        max_tokens: 500,
+        system:
+          'You are a Deribit trading assistant. Analyze the given strategy position and provide ' +
+          'a concise status update: current P&L interpretation, greek exposure summary, ' +
+          'whether current market conditions are favorable, and any suggested adjustments. ' +
+          'Format using Telegram Markdown v1: *bold* for labels, `backticks` for numbers. ' +
+          'Do NOT use ** or # headings. Keep it under 200 words.',
+        messages: [
+          {
+            role: 'user',
+            content: `Strategy:\n${JSON.stringify(strategy, null, 2)}\n\nCurrent market:\n${JSON.stringify(currentConditions, null, 2)}`,
+          },
+        ],
+      });
+
+      const text = response.content.find((c) => c.type === 'text') as
+        | Anthropic.TextBlock
+        | undefined;
+      return text?.text ?? 'Unable to analyze strategy.';
+    } catch (error) {
+      this.logger.error(`Failed to analyze strategy: ${error.message}`);
+      return 'Unable to analyze strategy.';
+    }
+  }
+
+  /**
    * Answer a trading question with optional conversation history.
    */
   async ask(
