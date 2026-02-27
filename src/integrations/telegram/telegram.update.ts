@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Update, Start, Command, On, Ctx, InjectBot } from 'nestjs-telegraf';
 import { Context, Telegraf } from 'telegraf';
 import { AuthService } from '../../modules/auth/auth.service';
@@ -17,7 +17,7 @@ const CURRENCIES: Currency[] = [Currency.BTC, Currency.ETH, Currency.USDC];
 
 @Update()
 @Injectable()
-export class TelegramUpdate {
+export class TelegramUpdate implements OnModuleInit {
   private readonly logger = new Logger(TelegramUpdate.name);
 
   constructor(
@@ -27,6 +27,25 @@ export class TelegramUpdate {
     private readonly deribitClientService: DeribitClientService,
     private readonly aiService: AiService,
   ) {}
+
+  async onModuleInit() {
+    try {
+      await this.bot.telegram.setMyCommands([
+        { command: 'start',      description: 'Show help and available commands' },
+        { command: 'portfolio',  description: 'AI-powered portfolio summary' },
+        { command: 'balance',    description: 'Quick balance overview' },
+        { command: 'positions',  description: 'Open positions' },
+        { command: 'orders',     description: 'Open orders' },
+        { command: 'ask',        description: 'Ask the AI assistant a question' },
+        { command: 'connect',    description: 'Link your Deribit credentials' },
+        { command: 'api_create', description: 'Generate a REST API key' },
+        { command: 'status',     description: 'Bot status' },
+      ]);
+      this.logger.log('Telegram command menu registered');
+    } catch (err) {
+      this.logger.warn(`Failed to register command menu: ${err.message}`);
+    }
+  }
 
   // ---------------------------------------------------------------------------
   // Core commands
