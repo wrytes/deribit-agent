@@ -34,6 +34,17 @@ export class AllExceptionsFilter implements ExceptionFilter {
     } else if (exception instanceof Error) {
       message = exception.message;
       error = exception.name;
+    } else if (
+      typeof exception === 'object' &&
+      exception !== null &&
+      'error' in exception &&
+      'jsonrpc' in exception
+    ) {
+      // Deribit client plain-object rejection (ErrorClientNotReady, ErrorClientRequestTimeout, etc.)
+      const deribitErr = (exception as any).error;
+      status = HttpStatus.BAD_GATEWAY;
+      message = deribitErr?.message ?? 'Deribit client error';
+      error = `DeribitError(${deribitErr?.code ?? -1})`;
     }
 
     this.logger.error(

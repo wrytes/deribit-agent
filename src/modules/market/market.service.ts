@@ -8,24 +8,28 @@ export class MarketService {
 
   async getBookSummaryByCurrency(userId: string, currency: string, kind?: string) {
     const client = await this.deribitClientService.getClient(userId);
-    return client.market.getBookSummaryByCurrency({ currency: currency as any, kind: kind as any });
+    const res = await client.market.getBookSummaryByCurrency({ currency: currency as any, kind: kind as any });
+    return this.deribitClientService.unwrap(res);
   }
 
   async getBookSummaryByInstrument(userId: string, instrumentName: string) {
     const client = await this.deribitClientService.getClient(userId);
-    return client.market.getBookSummaryByInstrument({ instrument_name: instrumentName });
+    const res = await client.market.getBookSummaryByInstrument({ instrument_name: instrumentName });
+    return this.deribitClientService.unwrap(res);
   }
 
   async getCurrencies(userId: string) {
     const client = await this.deribitClientService.getClient(userId);
-    return client.market.getCurrencies({});
+    const res = await client.market.getCurrencies({});
+    return this.deribitClientService.unwrap(res);
   }
 
   async getDeliveryPrices(userId: string, indexName: string, query?: Record<string, any>) {
     const client = await this.deribitClientService.getClient(userId);
-    return client.market.getDeliveryPrices({
+    const res = await client.market.getDeliveryPrices({
       index_name: indexName as MarketGetDeliveryPricesNames,
       ...query,
     });
+    return this.deribitClientService.unwrap(res);
   }
 }

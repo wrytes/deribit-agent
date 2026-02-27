@@ -8,17 +8,20 @@ export class AccountService {
 
   async getAccountSummary(userId: string, currency: string, extended?: boolean) {
     const client = await this.deribitClientService.getClient(userId);
-    return client.account.getAccountSummary({ currency: currency as Currency, extended });
+    const res = await client.account.getAccountSummary({ currency: currency as Currency, extended });
+    return this.deribitClientService.unwrap(res);
   }
 
   async getAccountSummaries(userId: string, extended?: boolean) {
     const client = await this.deribitClientService.getClient(userId);
-    return client.account.getAccountSummaries({ extended });
+    const res = await client.account.getAccountSummaries({ extended });
+    return this.deribitClientService.unwrap(res);
   }
 
   async getPosition(userId: string, instrumentName: string) {
     const client = await this.deribitClientService.getClient(userId);
-    return client.account.getPosition({ instrument_name: instrumentName });
+    const res = await client.account.getPosition({ instrument_name: instrumentName });
+    return this.deribitClientService.unwrap(res);
   }
 
   async getTransactionLog(
@@ -29,16 +32,18 @@ export class AccountService {
     query?: Record<string, any>,
   ) {
     const client = await this.deribitClientService.getClient(userId);
-    return client.account.getTransactionLog({
+    const res = await client.account.getTransactionLog({
       currency: currency as Currency,
       start_timestamp: startTimestamp,
       end_timestamp: endTimestamp,
       ...query,
     });
+    return this.deribitClientService.unwrap(res);
   }
 
   async getPortfolioMargins(userId: string, currency: string, query?: Record<string, any>) {
     const client = await this.deribitClientService.getClient(userId);
-    return client.account.getPortfolioMargins({ currency: currency as Currency, ...query });
+    const res = await client.account.getPortfolioMargins({ currency: currency as Currency, ...query });
+    return this.deribitClientService.unwrap(res);
   }
 }

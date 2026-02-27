@@ -73,7 +73,7 @@ export class WalletController {
   async getCurrentDepositAddress(
     @CurrentUser() user: User,
     @Query('currency') currency: string,
-  ) {
+  ): Promise<any> {
     return this.walletService.getCurrentDepositAddress(user.id, currency);
   }
 
