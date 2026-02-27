@@ -15,7 +15,7 @@ function s(ctx: Context): TelegramContext {
   return ctx as unknown as TelegramContext;
 }
 
-const CURRENCIES: Currency[] = [Currency.BTC, Currency.ETH, Currency.USDC];
+const CURRENCIES: Currency[] = [Currency.BTC, Currency.ETH, Currency.USDC, Currency.USDT];
 
 @Update()
 @Injectable()
