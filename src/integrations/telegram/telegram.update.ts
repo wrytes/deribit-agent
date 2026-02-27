@@ -51,6 +51,7 @@ export class TelegramUpdate implements OnModuleInit {
         { command: 'api_create',      description: 'Generate a REST API key' },
         { command: 'api_list',        description: 'List your active API keys' },
         { command: 'api_revoke',      description: 'Revoke an API key — /api_revoke <keyId>' },
+        { command: 'reset',           description: 'Clear conversation history' },
       ]);
       this.logger.log('Telegram command menu registered');
     } catch (err) {
@@ -285,11 +286,16 @@ export class TelegramUpdate implements OnModuleInit {
 
   @Command('vol')
   async onVol(@Ctx() ctx: Context) {
+    const tc = s(ctx);
     await ctx.reply('📡 Fetching volatility data...');
     try {
       const all = await this.marketDataService.getAllConditions();
       const analysis = await this.aiService.analyzeMarketConditions(all);
       await ctx.reply(`📈 *Volatility Analysis*\n\n${analysis}`, { parse_mode: 'Markdown' });
+      this.seedHistory(tc, 'Analyze current market volatility conditions.', analysis);
+      await ctx.reply('_Ask me anything about this — e.g. "is now a good time to sell premium?"_', {
+        parse_mode: 'Markdown',
+      });
     } catch (err) {
       await ctx.reply(`❌ Error: ${err.message}`);
     }
@@ -297,11 +303,17 @@ export class TelegramUpdate implements OnModuleInit {
 
   @Command('suggest')
   async onSuggest(@Ctx() ctx: Context) {
+    const tc = s(ctx);
+    const from = tc.from;
     await ctx.reply('🤖 Analyzing market conditions for strategy fit...');
     try {
       const all = await this.marketDataService.getAllConditions();
       const suggestion = await this.aiService.suggestStrategies(all);
       await ctx.reply(`💡 *Strategy Suggestions*\n\n${suggestion}`, { parse_mode: 'Markdown' });
+      this.seedHistory(tc, 'Suggest the best trading strategies for current market conditions.', suggestion);
+      await ctx.reply('_Ask me to go deeper on any strategy — e.g. "explain the iron condor setup"_', {
+        parse_mode: 'Markdown',
+      });
     } catch (err) {
       await ctx.reply(`❌ Error: ${err.message}`);
     }
@@ -420,6 +432,10 @@ export class TelegramUpdate implements OnModuleInit {
 
       const summary = await this.aiService.summarizePortfolio({ summaries: accountData, openOrdersCount });
       await ctx.reply(summary, { parse_mode: 'Markdown' });
+      this.seedHistory(s(ctx), 'Give me a summary of my Deribit portfolio.', summary);
+      await ctx.reply('_Want to dive deeper? Just ask — e.g. "how can I reduce my margin usage?"_', {
+        parse_mode: 'Markdown',
+      });
     } catch (err) {
       this.logger.error(`Portfolio error: ${err.message}`);
       await ctx.reply(`❌ Error: ${err.message}`);
@@ -560,21 +576,19 @@ export class TelegramUpdate implements OnModuleInit {
 
     const question = (message as any).text.replace(/^\/ask\s*/i, '').trim();
     if (!question) {
-      await ctx.reply('Usage: /ask <your question>\nExample: /ask What is delta in options?');
+      await ctx.reply(
+        'Just type your question directly — no /ask needed!\nOr: /ask What is delta in options?',
+      );
       return;
     }
 
-    if (!tc.session.askHistory) tc.session.askHistory = [];
-    tc.session.askHistory.push({ role: 'user', content: question });
-    if (tc.session.askHistory.length > 20) {
-      tc.session.askHistory = tc.session.askHistory.slice(-20);
-    }
+    await this.continueConversation(ctx, tc, question);
+  }
 
-    await ctx.reply('🤔 Thinking...');
-    const response = await this.aiService.ask(tc.session.askHistory);
-    tc.session.askHistory.push({ role: 'assistant', content: response });
-
-    await ctx.reply(response, { parse_mode: 'Markdown' });
+  @Command('reset')
+  async onReset(@Ctx() ctx: Context) {
+    s(ctx).session.askHistory = [];
+    await ctx.reply('🔄 Conversation history cleared. Starting fresh!');
   }
 
   // ---------------------------------------------------------------------------
@@ -592,24 +606,18 @@ export class TelegramUpdate implements OnModuleInit {
 
     if (text.startsWith('/')) return;
 
-    const session = tc.session;
-    if (session?.pendingAction?.type === 'connect_deribit') {
+    // Active wizard takes priority
+    if (tc.session?.pendingAction?.type === 'connect_deribit') {
       await this.handleConnectWizard(ctx, tc, from, text);
       return;
     }
-    if (session?.pendingAction?.type === 'strategy_create') {
+    if (tc.session?.pendingAction?.type === 'strategy_create') {
       await this.handleStrategyWizard(ctx, tc, from, text);
       return;
     }
 
-    const userId = await this.resolveUserId(BigInt(from.id), from.username);
-    if (!userId) return;
-
-    const account = await this.prisma.deribitAccount.findUnique({ where: { userId } });
-    if (!account) return;
-
-    const parsed = await this.aiService.parseTradingCommand(text);
-    await this.dispatchNlCommand(ctx, userId, parsed);
+    // Everything else continues the conversation
+    await this.continueConversation(ctx, tc, text);
   }
 
   // ---------------------------------------------------------------------------
@@ -750,53 +758,67 @@ export class TelegramUpdate implements OnModuleInit {
     }
   }
 
-  private async dispatchNlCommand(
-    ctx: Context,
-    userId: string,
-    parsed: { action: string; params: Record<string, any> },
-  ) {
-    switch (parsed.action) {
-      case 'portfolio_summary':
-        await this.onPortfolio(ctx);
-        break;
-      case 'open_positions':
-        await this.onPositions(ctx);
-        break;
-      case 'open_orders':
-        await this.onOrders(ctx);
-        break;
-      case 'place_order':
-        await ctx.reply(
-          `To place orders use the REST API:\n` +
-          `POST /trading/${parsed.params.side ?? 'buy'} with instrument_name, amount, type.`,
-        );
-        break;
-      case 'cancel_order':
-        await ctx.reply(
-          `To cancel an order:\nDELETE /trading/orders/${parsed.params.order_id ?? '<orderId>'}`,
-        );
-        break;
-      case 'ask_question': {
-        const tc = s(ctx);
-        if (!tc.session.askHistory) tc.session.askHistory = [];
-        const q = parsed.params.question as string;
-        tc.session.askHistory.push({ role: 'user', content: q });
-        await ctx.reply('🤔 Thinking...');
-        const answer = await this.aiService.ask(tc.session.askHistory);
-        tc.session.askHistory.push({ role: 'assistant', content: answer });
-        await ctx.reply(answer, { parse_mode: 'Markdown' });
-        break;
-      }
-      default:
-        await ctx.reply(
-          'I didn\'t understand that. Try:\n' +
-          '/portfolio — portfolio summary\n' +
-          '/balance — quick balances\n' +
-          '/positions — open positions\n' +
-          '/orders — open orders\n' +
-          '/ask <question> — AI assistant',
-        );
+  /**
+   * The single entry-point for all conversational AI turns.
+   * Fetches fresh context, appends the user message, calls the AI,
+   * appends the response, and trims history to stay within limits.
+   */
+  private async continueConversation(ctx: Context, tc: TelegramContext, userText: string) {
+    const from = tc.from;
+    if (!from) return;
+
+    if (!tc.session.askHistory) tc.session.askHistory = [];
+    tc.session.askHistory.push({ role: 'user', content: userText });
+
+    // Trim to last 30 turns (15 exchanges)
+    if (tc.session.askHistory.length > 30) {
+      tc.session.askHistory = tc.session.askHistory.slice(-30);
     }
+
+    const userId = await this.resolveUserId(BigInt(from.id), from.username);
+    const context = userId ? await this.buildAiContext(userId) : undefined;
+
+    await ctx.reply('🤔 ...');
+    const response = await this.aiService.ask(tc.session.askHistory, context ?? undefined);
+    tc.session.askHistory.push({ role: 'assistant', content: response });
+
+    await ctx.reply(response, { parse_mode: 'Markdown' });
+  }
+
+  /**
+   * Seed conversation history after a command produces AI output,
+   * so the user can immediately ask follow-up questions.
+   */
+  private seedHistory(tc: TelegramContext, userPrompt: string, assistantResponse: string) {
+    if (!tc.session.askHistory) tc.session.askHistory = [];
+    tc.session.askHistory.push(
+      { role: 'user', content: userPrompt },
+      { role: 'assistant', content: assistantResponse },
+    );
+    // Keep history bounded
+    if (tc.session.askHistory.length > 30) {
+      tc.session.askHistory = tc.session.askHistory.slice(-30);
+    }
+  }
+
+  /** Fetch live market + strategy context for the system prompt. */
+  private async buildAiContext(userId: string) {
+    const [conditions, strategies] = await Promise.allSettled([
+      this.marketDataService.getAllConditions(),
+      this.strategyService.list(userId),
+    ]);
+    return {
+      marketConditions: conditions.status === 'fulfilled' ? conditions.value : undefined,
+      activeStrategies:
+        strategies.status === 'fulfilled'
+          ? strategies.value.map((s) => ({
+              name: s.name,
+              type: s.type as string,
+              status: s.status as string,
+              allocationBtc: Number(s.allocationBtc),
+            }))
+          : [],
+    };
   }
 
   private async resolveUserId(telegramId: bigint, username?: string): Promise<string | null> {

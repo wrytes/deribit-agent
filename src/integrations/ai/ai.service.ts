@@ -321,21 +321,68 @@ export class AiService {
   }
 
   /**
-   * Answer a trading question with optional conversation history.
+   * Conversational assistant with persistent history and optional live context.
+   *
+   * `context` is injected into the system prompt so Claude always has fresh
+   * numbers even mid-conversation — without the user having to re-run commands.
    */
   async ask(
     conversationHistory: Array<{ role: 'user' | 'assistant'; content: string }>,
+    context?: {
+      marketConditions?: Array<{
+        currency: string;
+        indexPrice: number;
+        dvolIndex: number | null;
+        rv30d: number | null;
+        ivRank: number | null;
+        ivPercentile: number | null;
+        ivOverRv: number | null;
+      }>;
+      activeStrategies?: Array<{
+        name: string;
+        type: string;
+        status: string;
+        allocationBtc: number;
+      }>;
+    },
   ): Promise<string> {
+    const systemParts: string[] = [
+      'You are a knowledgeable Deribit trading assistant embedded in a Telegram bot. ' +
+      'Help the user understand their portfolio, analyse volatility conditions, discuss strategies, ' +
+      'and answer questions about options, perpetuals, greeks, margin, and Deribit-specific concepts. ' +
+      'Be concise, practical, and engaging — ask clarifying questions when useful. ' +
+      'You have memory of this conversation, so reference earlier messages naturally. ' +
+      'Available bot commands: /market, /vol, /suggest, /portfolio, /balance, /positions, /orders, ' +
+      '/strategy_create, /strategies, /connect, /api_create. ' +
+      'Format responses using Telegram Markdown v1 only: *bold* for emphasis, `backticks` for numbers/code. ' +
+      'Do NOT use ** double asterisks, # headings, or MarkdownV2 syntax.',
+    ];
+
+    if (context?.marketConditions?.length) {
+      const mc = context.marketConditions
+        .filter((c) => c.indexPrice > 0)
+        .map((c) =>
+          `${c.currency}: price=$${c.indexPrice.toLocaleString()} DVOL=${c.dvolIndex?.toFixed(1) ?? 'n/a'} ` +
+          `IVR=${c.ivRank?.toFixed(0) ?? 'n/a'}/100 IV/RV=${c.ivOverRv?.toFixed(2) ?? 'n/a'}`,
+        )
+        .join('; ');
+      systemParts.push(`\nCurrent market snapshot: ${mc}`);
+    }
+
+    if (context?.activeStrategies?.length) {
+      const strats = context.activeStrategies
+        .map((s) => `${s.name} (${s.type}, ${s.status}, ${s.allocationBtc} BTC)`)
+        .join('; ');
+      systemParts.push(`\nUser's active strategies: ${strats}`);
+    } else if (context?.activeStrategies) {
+      systemParts.push('\nUser has no active strategies yet.');
+    }
+
     try {
       const response = await this.client.messages.create({
         model: MODEL,
         max_tokens: 1024,
-        system:
-          'You are a knowledgeable Deribit trading assistant. Help users understand their portfolio, ' +
-          'trading strategies, options, perpetuals, margin, and Deribit-specific concepts. ' +
-          'Be concise and practical. Available bot commands: /portfolio, /positions, /orders, /balance, /ask, /connect, /api_create. ' +
-          'Format responses using Telegram Markdown v1 only: *bold* for emphasis, `backticks` for code/values. ' +
-          'Do NOT use ** double asterisks, # headings, or any other markdown syntax.',
+        system: systemParts.join(''),
         messages: conversationHistory,
       });
 
