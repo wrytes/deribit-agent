@@ -423,14 +423,31 @@ export class TelegramUpdate implements OnModuleInit {
             initial_margin: result.initial_margin,
             maintenance_margin: result.maintenance_margin,
             delta_total: result.delta_total,
+            unrealized_pnl: result.unrealized_pnl,
           };
         })
         .filter((d) => d.equity > 0 || d.balance > 0);
 
+      if (accountData.length === 0) {
+        await ctx.reply('📭 No active balances found on your Deribit account.');
+        return;
+      }
+
       const ordersRes = await client.trading.getOpenOrdersByCurrency({ currency: 'BTC' });
       const openOrdersCount = 'result' in ordersRes ? ordersRes.result.length : 0;
 
-      const summary = await this.aiService.summarizePortfolio({ summaries: accountData, openOrdersCount });
+      // Build a structured fallback regardless — shown if AI is unavailable
+      const fallback = buildPortfolioText(accountData, openOrdersCount);
+
+      let summary: string;
+      try {
+        const aiSummary = await this.aiService.summarizePortfolio({ summaries: accountData, openOrdersCount });
+        // If AI returned its own fallback string, use the structured one instead
+        summary = aiSummary.startsWith('Unable to') ? fallback : aiSummary;
+      } catch {
+        summary = fallback;
+      }
+
       await this.safeReply(ctx, summary);
       this.seedHistory(s(ctx), 'Give me a summary of my Deribit portfolio.', summary);
       await ctx.reply('_Want to dive deeper? Just ask — e.g. "how can I reduce my margin usage?"_', {
@@ -847,6 +864,44 @@ export class TelegramUpdate implements OnModuleInit {
 // ---------------------------------------------------------------------------
 // Utility
 // ---------------------------------------------------------------------------
+
+/** Format raw account data into a readable portfolio summary (no AI required). */
+function buildPortfolioText(
+  data: Array<{
+    currency: string;
+    equity: number;
+    balance: number;
+    available_funds: number;
+    initial_margin: number;
+    maintenance_margin: number;
+    unrealized_pnl?: number;
+    delta_total?: number;
+  }>,
+  openOrdersCount: number,
+): string {
+  const lines: string[] = ['📊 *Portfolio Summary*\n'];
+  for (const d of data) {
+    const pnlStr =
+      d.unrealized_pnl !== undefined
+        ? `\n  Unrealized P&L: \`${d.unrealized_pnl >= 0 ? '+' : ''}${d.unrealized_pnl.toFixed(6)}\``
+        : '';
+    const deltaStr =
+      d.delta_total !== undefined && d.delta_total !== 0
+        ? `\n  Delta: \`${d.delta_total.toFixed(4)}\``
+        : '';
+    lines.push(
+      `*${d.currency}*\n` +
+      `  Equity: \`${d.equity.toFixed(6)}\`\n` +
+      `  Balance: \`${d.balance.toFixed(6)}\`\n` +
+      `  Available: \`${d.available_funds.toFixed(6)}\`\n` +
+      `  Margin used: \`${d.initial_margin.toFixed(6)}\`` +
+      pnlStr +
+      deltaStr,
+    );
+  }
+  if (openOrdersCount > 0) lines.push(`\nOpen orders: \`${openOrdersCount}\``);
+  return lines.join('\n');
+}
 
 /** Label the IV/RV ratio for quick visual scanning. */
 function ivOverRvLabel(ratio: number | null): string {
