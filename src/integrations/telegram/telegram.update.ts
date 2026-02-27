@@ -291,7 +291,7 @@ export class TelegramUpdate implements OnModuleInit {
     try {
       const all = await this.marketDataService.getAllConditions();
       const analysis = await this.aiService.analyzeMarketConditions(all);
-      await ctx.reply(`📈 *Volatility Analysis*\n\n${analysis}`, { parse_mode: 'Markdown' });
+      await this.safeReply(ctx, `📈 *Volatility Analysis*\n\n${analysis}`);
       this.seedHistory(tc, 'Analyze current market volatility conditions.', analysis);
       await ctx.reply('_Ask me anything about this — e.g. "is now a good time to sell premium?"_', {
         parse_mode: 'Markdown',
@@ -309,7 +309,7 @@ export class TelegramUpdate implements OnModuleInit {
     try {
       const all = await this.marketDataService.getAllConditions();
       const suggestion = await this.aiService.suggestStrategies(all);
-      await ctx.reply(`💡 *Strategy Suggestions*\n\n${suggestion}`, { parse_mode: 'Markdown' });
+      await this.safeReply(ctx, `💡 *Strategy Suggestions*\n\n${suggestion}`);
       this.seedHistory(tc, 'Suggest the best trading strategies for current market conditions.', suggestion);
       await ctx.reply('_Ask me to go deeper on any strategy — e.g. "explain the iron condor setup"_', {
         parse_mode: 'Markdown',
@@ -431,7 +431,7 @@ export class TelegramUpdate implements OnModuleInit {
       const openOrdersCount = 'result' in ordersRes ? ordersRes.result.length : 0;
 
       const summary = await this.aiService.summarizePortfolio({ summaries: accountData, openOrdersCount });
-      await ctx.reply(summary, { parse_mode: 'Markdown' });
+      await this.safeReply(ctx, summary);
       this.seedHistory(s(ctx), 'Give me a summary of my Deribit portfolio.', summary);
       await ctx.reply('_Want to dive deeper? Just ask — e.g. "how can I reduce my margin usage?"_', {
         parse_mode: 'Markdown',
@@ -743,10 +743,7 @@ export class TelegramUpdate implements OnModuleInit {
       try {
         const conditions = await this.marketDataService.getAllConditions();
         const suggestion = await this.aiService.suggestStrategies(conditions);
-        await ctx.reply(
-          `💡 *Market conditions for your strategy*\n\n${suggestion}`,
-          { parse_mode: 'Markdown' },
-        );
+        await this.safeReply(ctx, `💡 *Market conditions for your strategy*\n\n${suggestion}`);
       } catch (err) {
         this.logger.warn(`AI analysis failed: ${err.message}`);
       }
@@ -782,7 +779,7 @@ export class TelegramUpdate implements OnModuleInit {
     const response = await this.aiService.ask(tc.session.askHistory, context ?? undefined);
     tc.session.askHistory.push({ role: 'assistant', content: response });
 
-    await ctx.reply(response, { parse_mode: 'Markdown' });
+    await this.safeReply(ctx, response);
   }
 
   /**
@@ -819,6 +816,24 @@ export class TelegramUpdate implements OnModuleInit {
             }))
           : [],
     };
+  }
+
+  /**
+   * Send a message with Markdown formatting. If Telegram rejects it due to a
+   * parse error (unmatched * _ ` from AI output), retry as plain text so the
+   * message always reaches the user.
+   */
+  private async safeReply(ctx: Context, text: string): Promise<void> {
+    try {
+      await ctx.reply(text, { parse_mode: 'Markdown' });
+    } catch (err) {
+      const msg: string = err?.message ?? '';
+      if (msg.includes('Bad Request') || msg.includes("can't parse entities")) {
+        await ctx.reply(text); // plain text fallback
+      } else {
+        throw err;
+      }
+    }
   }
 
   private async resolveUserId(telegramId: bigint, username?: string): Promise<string | null> {
