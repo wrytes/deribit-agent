@@ -382,11 +382,21 @@ class OptionsEnv(gym.Env):
         has_pos = self.call_pos is not None or self.put_pos is not None
         reward += self.capital_eff_bonus if has_pos else -self.capital_eff_bonus
 
-        # Delta guard
-        sigma_new  = self._sigma(dvol_new)
-        call_d = bs_delta(S_new, self.call_pos["strike"], self.call_pos["dte"]/365, self.r, sigma_new, "call") if self.call_pos else 0.0
-        put_d  = bs_delta(S_new, self.put_pos["strike"],  self.put_pos["dte"]/365,  self.r, sigma_new, "put")  if self.put_pos  else 0.0
-        excess = max(0.0, abs(-(call_d + put_d)) - self.delta_threshold)
+        # Net delta guard
+        # Assets: margin_balance BTC (delta = +1/BTC)
+        # Obligations: short call reduces delta; short put adds delta (put_d < 0 → -put_d > 0)
+        # Covered calls are fine (net_delta < margin_balance); penalise only when
+        # net delta exceeds collateral, i.e. short puts lever exposure beyond assets.
+        sigma_new = self._sigma(dvol_new)
+        net_delta = self.margin_balance
+        if self.call_pos:
+            call_d     = bs_delta(S_new, self.call_pos["strike"], self.call_pos["dte"] / 365, self.r, sigma_new, "call")
+            net_delta -= call_d * self.call_pos["size"]
+        if self.put_pos:
+            put_d      = bs_delta(S_new, self.put_pos["strike"],  self.put_pos["dte"]  / 365, self.r, sigma_new, "put")
+            net_delta -= put_d * self.put_pos["size"]   # put_d < 0, so this increases net_delta
+        net_delta_norm = net_delta / max(self.initial_margin_btc, 1e-8)
+        excess = max(0.0, net_delta_norm - 1.0 - self.delta_threshold)
         reward -= excess * self.delta_penalty_coef
 
         # Asymmetric loss penalty — amplify bad steps during losing weeks
