@@ -182,7 +182,7 @@ def _build_data(candles: pd.DataFrame, dvol_df: pd.DataFrame) -> np.ndarray:
         df.index[0].date(),
         df.index[-1].date(),
     )
-    return df[["btc_price", "dvol", "hv"]].values.astype(np.float32)
+    return df[["btc_price", "dvol", "hv"]].values.astype(np.float32), df.index.tolist()
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +221,7 @@ def train_session(session_id: str) -> dict:
     total_timesteps = int(train_cfg["total_timesteps"])
 
     # --- Build data and split 80 / 20 ---
-    data = _build_data(candles, dvol_df)
+    data, _ = _build_data(candles, dvol_df)
     split      = int(len(data) * 0.8)
     train_data = data[:split]
     eval_data  = data[split:]
