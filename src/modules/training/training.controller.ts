@@ -88,11 +88,23 @@ export class TrainingController {
     return this.trainingService.getSession(id);
   }
 
-  @Delete('sessions/:id')
+  @Post('sessions/:id/cancel')
   @RequireScopes(ApiKeyScope.TRAINING_WRITE)
-  @ApiOperation({ summary: 'Cancel a queued or running training session' })
+  @ApiOperation({ summary: 'Cancel a queued or running training session (sets status to CANCELLED)' })
   cancelSession(@Param('id') id: string) {
     return this.trainingService.cancelSession(id);
+  }
+
+  @Delete('sessions/:id')
+  @RequireScopes(ApiKeyScope.TRAINING_WRITE)
+  @ApiOperation({
+    summary: 'Hard-delete a session and all related data',
+    description:
+      'Cascades: removes the BullMQ job, all AgentRuns (and their AgentActions), ' +
+      'the TrainedModel, and finally the TrainingSession itself.',
+  })
+  deleteSession(@Param('id') id: string) {
+    return this.trainingService.deleteSession(id);
   }
 
   @Post('sessions/:id/callback')

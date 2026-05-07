@@ -116,6 +116,32 @@ export class TrainingService {
     });
   }
 
+  /**
+   * Hard-delete a session and all related data.
+   * Cascade order:
+   *   AgentRun.sessionId is nullable (SetNull default) → delete AgentRuns manually
+   *   AgentAction.runId  has onDelete: Cascade       → auto-deleted with AgentRun
+   *   TrainedModel.sessionId has onDelete: Cascade   → auto-deleted with TrainingSession
+   */
+  async deleteSession(id: string) {
+    const session = await this.getSession(id); // 404 if not found
+
+    // Pull queued/running job out of BullMQ before deleting the DB record
+    if (session.jobId) {
+      const job = await this.trainingQueue.getJob(session.jobId);
+      await job?.remove().catch(() => null); // best-effort
+    }
+
+    await this.prisma.$transaction([
+      // AgentActions cascade from AgentRun automatically
+      this.prisma.agentRun.deleteMany({ where: { sessionId: id } }),
+      // TrainedModel cascades from TrainingSession automatically
+      this.prisma.trainingSession.delete({ where: { id } }),
+    ]);
+
+    return { deleted: true, id };
+  }
+
   /** Called by the processor to mark a session as started. */
   async markRunning(id: string) {
     return this.prisma.trainingSession.update({
