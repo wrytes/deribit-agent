@@ -103,6 +103,32 @@ export class AgentController {
     return this.agentService.resumeRun(user.id, id);
   }
 
+  @Post('runs/:id/execute')
+  @RequireScopes(ApiKeyScope.AGENT_WRITE)
+  @ApiOperation({
+    summary: 'Execute the model on historical data via the Python trainer sidecar',
+    description:
+      'Calls POST /run on TRAINER_URL. Blocks until the episode completes. ' +
+      'Actions are logged back via NESTJS_API_KEY. Requires NESTJS_URL + NESTJS_API_KEY on the trainer.',
+  })
+  @ApiBody({
+    required: false,
+    schema: {
+      type: 'object',
+      properties: {
+        dataFrom: { type: 'string', format: 'date-time', description: 'Override data start (defaults to session.dataFrom)' },
+        dataTo:   { type: 'string', format: 'date-time', description: 'Override data end (defaults to now)' },
+      },
+    },
+  })
+  executeRun(
+    @CurrentUser() user: { id: string },
+    @Param('id') id: string,
+    @Body() body: { dataFrom?: string; dataTo?: string } = {},
+  ) {
+    return this.agentService.executeRun(user.id, id, body.dataFrom, body.dataTo);
+  }
+
   // ---------------------------------------------------------------------------
   // Actions
   // ---------------------------------------------------------------------------
@@ -116,6 +142,7 @@ export class AgentController {
       required: ['actionType'],
       properties: {
         actionType:    { type: 'string', example: 'sell_call', description: 'hold | sell_call | sell_put | buy_call | buy_put | close | hedge' },
+        timestamp:     { type: 'string', format: 'date-time', description: 'Historical timestamp for backtest actions; defaults to now' },
         instrument:    { type: 'string', example: 'BTC-28MAR25-70000-C' },
         quantity:      { type: 'number', example: 0.1 },
         price:         { type: 'number', example: 0.002 },
@@ -134,6 +161,7 @@ export class AgentController {
     @Body()
     body: {
       actionType: string;
+      timestamp?: string;
       instrument?: string;
       quantity?: number;
       price?: number;
@@ -146,7 +174,11 @@ export class AgentController {
       reason?: string;
     },
   ) {
-    return this.agentService.logAction({ runId, ...body });
+    return this.agentService.logAction({
+      runId,
+      ...body,
+      ...(body.timestamp ? { timestamp: new Date(body.timestamp) } : {}),
+    });
   }
 
   @Get('runs/:id/actions')

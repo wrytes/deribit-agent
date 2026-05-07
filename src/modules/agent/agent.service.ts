@@ -4,6 +4,7 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../core/database/prisma.service';
 import { AgentRunStatus } from '@prisma/client';
 
@@ -20,6 +21,7 @@ export interface CreateRunDto {
 export interface LogActionDto {
   runId: string;
   actionType: string;
+  timestamp?: Date;
   instrument?: string;
   quantity?: number;
   price?: number;
@@ -36,7 +38,10 @@ export interface LogActionDto {
 export class AgentService {
   private readonly logger = new Logger(AgentService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly config: ConfigService,
+  ) {}
 
   // ---------------------------------------------------------------------------
   // Agent runs
@@ -133,6 +138,7 @@ export class AgentService {
       data: {
         runId:         dto.runId,
         actionType:    dto.actionType,
+        ...(dto.timestamp ? { timestamp: dto.timestamp } : {}),
         instrument:    dto.instrument,
         quantity:      dto.quantity,
         price:         dto.price,
@@ -200,5 +206,49 @@ export class AgentService {
         totalPnlBtc: Number(r.total_pnl),
       })),
     };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Execute
+  // ---------------------------------------------------------------------------
+
+  /** Trigger the Python sidecar to run the model linked to this agent run. */
+  async executeRun(
+    userId: string,
+    id: string,
+    dataFrom?: string,
+    dataTo?: string,
+  ) {
+    const run = await this.prisma.agentRun.findFirst({
+      where: { id, userId },
+    });
+    if (!run) throw new NotFoundException('Agent run not found');
+    if (run.status !== AgentRunStatus.ACTIVE) {
+      throw new BadRequestException(`Run is not active (status: ${run.status})`);
+    }
+    if (!run.sessionId) {
+      throw new BadRequestException('Run has no linked training session — set sessionId when creating the run');
+    }
+
+    const trainerUrl = this.config.get<string>('TRAINER_URL') ?? 'http://localhost:8000';
+
+    const response = await fetch(`${trainerUrl}/run`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        run_id:     id,
+        session_id: run.sessionId,
+        ...(dataFrom ? { data_from: dataFrom } : {}),
+        ...(dataTo   ? { data_to:   dataTo   } : {}),
+      }),
+      signal: AbortSignal.timeout(3_600_000),
+    });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => 'no body');
+      throw new BadRequestException(`Trainer responded ${response.status}: ${text}`);
+    }
+
+    return response.json();
   }
 }
