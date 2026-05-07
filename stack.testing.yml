@@ -42,9 +42,49 @@ services:
                 condition: on-failure
                 delay: 5s
 
+    # ---------------------------------------------------------------------------
+    # ML trainer sidecar
+    # ---------------------------------------------------------------------------
+    # Uncomment to build locally (requires NVIDIA Container Toolkit for GPU).
+    # For the initial PoC you can also run it manually:
+    #   docker run -it --gpus all --network deribit-agent_backend \
+    #     -e DATABASE_URL=postgresql://postgres:postgres@postgres:5432/deribit-agent \
+    #     -v trainer_models:/app/models \
+    #     -p 8000:8000 deribit-trainer
+    #
+    # trainer:
+    #     build:
+    #         context: ./trainer
+    #         dockerfile: Dockerfile
+    #     image: deribit-trainer
+    #     environment:
+    #         DATABASE_URL: postgresql://postgres:postgres@postgres:5432/deribit-agent
+    #         MODELS_DIR: /app/models
+    #         PORT: '8000'
+    #     ports:
+    #         - '8000:8000'
+    #     volumes:
+    #         - trainer_models:/app/models
+    #     networks:
+    #         - backend
+    #     depends_on:
+    #         postgres:
+    #             condition: service_healthy
+    #     deploy:
+    #         replicas: 1
+    #         restart_policy:
+    #             condition: on-failure
+    #         resources:
+    #             reservations:
+    #                 devices:
+    #                     - driver: nvidia
+    #                       count: 1
+    #                       capabilities: [gpu]
+
 volumes:
     postgres_data:
     redis_data:
+    # trainer_models:   # uncomment when trainer service is enabled
 
 networks:
     backend:

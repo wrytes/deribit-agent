@@ -1,0 +1,6 @@
+models/*.zip
+models/checkpoints/
+__pycache__/
+*.pyc
+*.pyo
+.env
