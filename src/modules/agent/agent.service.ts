@@ -53,7 +53,7 @@ export class AgentService {
       throw new BadRequestException('deribitAccountId is required for LIVE runs');
     }
 
-    return this.prisma.agentRun.create({
+    const run = await this.prisma.agentRun.create({
       data: {
         userId:            dto.userId,
         sessionId:         dto.sessionId,
@@ -67,6 +67,14 @@ export class AgentService {
         status:            AgentRunStatus.ACTIVE,
       },
     });
+
+    if (run.runType === AgentRunType.BACKTEST && run.sessionId) {
+      this.executeRun(dto.userId, run.id).catch((err: Error) => {
+        this.logger.error(`Backtest auto-dispatch failed for run ${run.id}: ${err.message}`);
+      });
+    }
+
+    return run;
   }
 
   async listRuns(userId: string, status?: AgentRunStatus) {
@@ -271,6 +279,14 @@ export class AgentService {
     if (!run.sessionId) {
       throw new BadRequestException('Run has no linked training session — set sessionId when creating the run');
     }
+
+    await this.prisma.$transaction([
+      this.prisma.agentAction.deleteMany({ where: { runId: id } }),
+      this.prisma.agentRun.update({
+        where: { id },
+        data:  { currentCapitalBtc: run.initialCapitalBtc },
+      }),
+    ]);
 
     const trainerUrl = this.config.get<string>('TRAINER_URL') ?? 'http://localhost:8000';
 
