@@ -65,7 +65,8 @@ export class TrainingService {
     });
 
     const job = await this.trainingQueue.add('train', { sessionId: session.id }, {
-      attempts: 1,
+      attempts: 5,
+      backoff: { type: 'exponential', delay: 15_000 }, // 15s, 30s, 60s, 120s, 240s
       removeOnComplete: false,
       removeOnFail:     false,
     });
