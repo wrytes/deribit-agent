@@ -3,7 +3,7 @@ FastAPI training sidecar.
 
 NestJS TrainingProcessor calls:
   POST /train   { "session_id": "<cuid>" }   → returns immediately; training runs in background
-  POST /run     { "run_id": "<cuid>", "session_id": "<cuid>", "data_from"?, "data_to"? }
+  POST /run     { "run_id": "<cuid>", "session_id": "<cuid>", "data_from"?, "data_to"?, "env_overrides"? }
 
 When training finishes the sidecar POSTs results to:
   POST {NESTJS_URL}/training/sessions/{session_id}/callback
@@ -101,10 +101,11 @@ async def train(req: TrainRequest, background_tasks: BackgroundTasks):
 # ---------------------------------------------------------------------------
 
 class RunRequest(BaseModel):
-    run_id:     str
-    session_id: str
-    data_from:  Optional[str] = None  # ISO-8601; defaults to session.dataFrom
-    data_to:    Optional[str] = None  # ISO-8601; defaults to now
+    run_id:       str
+    session_id:   str
+    data_from:    Optional[str]  = None  # ISO-8601; defaults to session.dataFrom
+    data_to:      Optional[str]  = None  # ISO-8601; defaults to now
+    env_overrides: Optional[dict] = None  # merged on top of session env config
 
 
 @app.post("/run")
@@ -122,7 +123,7 @@ async def run(req: RunRequest):
     try:
         loop   = asyncio.get_event_loop()
         result = await loop.run_in_executor(
-            None, run_session, req.run_id, req.session_id, from_dt, to_dt
+            None, run_session, req.run_id, req.session_id, from_dt, to_dt, req.env_overrides
         )
         logger.info("Run complete: run_id=%s  %s", req.run_id, result)
         return result

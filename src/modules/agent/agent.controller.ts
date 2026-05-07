@@ -117,17 +117,34 @@ export class AgentController {
     schema: {
       type: 'object',
       properties: {
-        dataFrom: { type: 'string', format: 'date-time', description: 'Override data start (defaults to session.dataFrom)' },
-        dataTo:   { type: 'string', format: 'date-time', description: 'Override data end (defaults to now)' },
+        dataFrom:     { type: 'string', format: 'date-time', description: 'Override data start (defaults to session.dataFrom)' },
+        dataTo:       { type: 'string', format: 'date-time', description: 'Override data end (defaults to now)' },
+        envOverrides: {
+          type: 'object',
+          description: 'Merged on top of session env config at run time — no retraining needed',
+          example: { expiry_days: 14, position_size_pct: 0.3, delta_threshold: 0.20 },
+          properties: {
+            expiry_days:        { type: 'number' },
+            position_size_pct:  { type: 'number' },
+            max_position_btc:   { type: 'number' },
+            delta_threshold:    { type: 'number' },
+            delta_penalty_coef: { type: 'number' },
+            max_margin_ratio:   { type: 'number' },
+            risk_free_rate:     { type: 'number' },
+            loss_multiplier:    { type: 'number' },
+            loss_threshold:     { type: 'number' },
+            capital_eff_bonus:  { type: 'number' },
+          },
+        },
       },
     },
   })
   executeRun(
     @CurrentUser() user: { id: string },
     @Param('id') id: string,
-    @Body() body: { dataFrom?: string; dataTo?: string } = {},
+    @Body() body: { dataFrom?: string; dataTo?: string; envOverrides?: Record<string, any> } = {},
   ) {
-    return this.agentService.executeRun(user.id, id, body.dataFrom, body.dataTo);
+    return this.agentService.executeRun(user.id, id, body.dataFrom, body.dataTo, body.envOverrides);
   }
 
   // ---------------------------------------------------------------------------

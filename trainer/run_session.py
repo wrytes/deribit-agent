@@ -1,7 +1,7 @@
 """
 Inference loop for a trained PPO model.
 
-run_session(run_id, session_id, data_from, data_to)
+run_session(run_id, session_id, data_from, data_to, env_overrides)
   1. Loads TrainingSession config and TrainedModel path from DB
   2. Fetches candle + DVOL data for the date range
   3. Runs one PPO episode (deterministic) from step 0
@@ -96,6 +96,7 @@ def run_session(
     session_id: str,
     data_from=None,
     data_to=None,
+    env_overrides: dict | None = None,
 ) -> dict:
     nestjs_url = os.environ.get("NESTJS_URL", "http://localhost:3030")
     api_key    = os.environ.get("NESTJS_API_KEY", "")
@@ -126,9 +127,9 @@ def run_session(
 
     data, dates = _build_data(candles, dvol_df)
 
-    # ── Env (full margin precision for inference) ──────────────────────────────
+    # ── Env config: defaults → session hyperparams → run-time overrides ───────
     hp      = session.get("hyperparams") or {}
-    env_cfg = {**DEFAULT_ENV, **(hp.get("env", {}))}
+    env_cfg = {**DEFAULT_ENV, **(hp.get("env", {})), **(env_overrides or {})}
     env_cfg["fast_margin"]    = False
     env_cfg["episode_length"] = len(data)  # run through all available data
 

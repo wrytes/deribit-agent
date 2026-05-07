@@ -253,6 +253,7 @@ export class AgentService {
     id: string,
     dataFrom?: string,
     dataTo?: string,
+    envOverrides?: Record<string, any>,
   ) {
     const run = await this.prisma.agentRun.findFirst({
       where: { id, userId },
@@ -273,8 +274,9 @@ export class AgentService {
       body:    JSON.stringify({
         run_id:     id,
         session_id: run.sessionId,
-        ...(dataFrom ? { data_from: dataFrom } : {}),
-        ...(dataTo   ? { data_to:   dataTo   } : {}),
+        ...(dataFrom      ? { data_from:      dataFrom      } : {}),
+        ...(dataTo        ? { data_to:        dataTo        } : {}),
+        ...(envOverrides  ? { env_overrides:  envOverrides  } : {}),
       }),
       signal: AbortSignal.timeout(3_600_000),
     });
