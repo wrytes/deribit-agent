@@ -17,6 +17,20 @@ def price(S: float, K: float, T: float, r: float, sigma: float, option_type="cal
     return float(K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1))
 
 
+def price_vec(S, K: float, T: float, r: float, sigma, option_type: str = "call"):
+    """Vectorised Black-Scholes price — S and sigma may be NumPy arrays."""
+    if T <= 0:
+        if option_type == "call":
+            return np.maximum(S - K, 0.0)
+        return np.maximum(K - S, 0.0)
+    sqrtT = np.sqrt(T)
+    d1 = (np.log(S / K) + (r + 0.5 * sigma ** 2) * T) / (sigma * sqrtT)
+    d2 = d1 - sigma * sqrtT
+    if option_type == "call":
+        return S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
+    return K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
+
+
 def delta(S: float, K: float, T: float, r: float, sigma: float, option_type="call") -> float:
     if T <= 0:
         if option_type == "call":

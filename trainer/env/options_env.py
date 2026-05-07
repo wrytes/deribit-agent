@@ -2,7 +2,7 @@ import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 from collections import deque
-from env.black_scholes import price as bs_price, delta as bs_delta, strike_from_delta
+from env.black_scholes import price as bs_price, price_vec as bs_price_vec, delta as bs_delta, strike_from_delta
 
 # action_id -> None | "close" | {"close_pct": float}
 #            | {"call_delta": float}
@@ -166,30 +166,28 @@ class OptionsEnv(gym.Env):
         extra_positions: list of (pos_dict, opt_type) to include prospectively.
         Extended scenarios (+100% to +500%) are skipped for short-dated options
         (expiry_days <= 30) since such moves are impossible in days/weeks.
+        Vectorised: all (N_price × N_iv) shock combinations evaluated in one
+        NumPy pass per position instead of a triple Python loop.
         """
-        worst = 0.0
         positions = [(p, p["type"]) for p in (self.call_pos, self.put_pos) if p is not None]
         if extra_positions:
             positions.extend(extra_positions)
         if not positions:
             return 0.0
         shocks = _PM_PRICE_SHOCKS if self.expiry_days <= 30 else _PM_ALL_SHOCKS
-        # Baseline prices are invariant across all shock scenarios — compute once
-        baselines = [
-            bs_price(S, pos["strike"], pos["dte"] / 365.0, self.r, sigma, opt_type)
-            for pos, opt_type in positions
-        ]
-        for price_shock in shocks:
-            S2 = S * (1.0 + price_shock)
-            for iv_mult in self._pm_iv_shocks:
-                sigma2 = max(sigma * (1.0 + iv_mult), 0.01)
-                pnl    = 0.0
-                for i, (pos, opt_type) in enumerate(positions):
-                    T        = pos["dte"] / 365.0
-                    stressed = bs_price(S2, pos["strike"], T, self.r, sigma2, opt_type)
-                    pnl     -= (stressed - baselines[i]) * pos["size"]
-                worst = min(worst, pnl)
-        return max(0.0, -worst)
+
+        # Shocked grids — broadcast to (N_price, N_iv) without allocating full mesh
+        S_grid = (S * (1.0 + shocks))[:, None]                                   # (N_price, 1)
+        v_grid = np.maximum(sigma * (1.0 + self._pm_iv_shocks), 0.01)[None, :]   # (1, N_iv)
+
+        pnl = np.zeros((len(shocks), len(self._pm_iv_shocks)))
+        for pos, opt_type in positions:
+            K, T, size = pos["strike"], pos["dte"] / 365.0, pos["size"]
+            baseline  = bs_price(S, K, T, self.r, sigma, opt_type)            # scalar
+            stressed  = bs_price_vec(S_grid, K, T, self.r, v_grid, opt_type)  # (N_price, N_iv)
+            pnl      -= (stressed - baseline) * size
+
+        return float(max(0.0, -pnl.min()))
 
     def _sell_leg(self, S, sigma, strike, option_type):
         """Sell one leg. Returns (position_dict, btc_received)."""
