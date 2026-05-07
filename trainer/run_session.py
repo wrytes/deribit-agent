@@ -67,22 +67,22 @@ def _instrument_label(current_date: datetime, dte: int, strike: float, opt_type:
     return f"BTC-{expiry}-{int(strike)}-{suffix}"
 
 
-def _post_action(nestjs_url: str, api_key: str, run_id: str, payload: dict, timestamp: datetime | None = None) -> None:
-    """Fire-and-forget POST to NestJS. Failure is logged, never raises."""
-    if timestamp is not None:
-        payload = {**payload, "timestamp": timestamp.strftime("%Y-%m-%dT%H:%M:%SZ")}
+def _flush_actions(nestjs_url: str, api_key: str, run_id: str, actions: list[dict]) -> None:
+    """POST all collected actions in one batch request."""
+    if not actions:
+        return
     try:
-        data = json.dumps(payload).encode()
+        data = json.dumps({"actions": actions}).encode()
         req = urllib.request.Request(
-            f"{nestjs_url}/agent/runs/{run_id}/actions",
+            f"{nestjs_url}/agent/runs/{run_id}/actions/batch",
             data=data,
             headers={"Content-Type": "application/json", "x-api-key": api_key},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=10):
+        with urllib.request.urlopen(req, timeout=60):
             pass
     except Exception as exc:
-        logger.warning("Failed to log action to NestJS: %s", exc)
+        logger.error("Failed to flush actions to NestJS: %s", exc)
 
 
 def run_session(
@@ -149,51 +149,53 @@ def run_session(
 
     total_reward   = 0.0
     steps          = 0
-    actions_logged = 0
+    pending        : list[dict] = []
 
     while True:
-        row                   = env.data[min(env.idx, len(env.data) - 1)]
-        S, dvol               = float(row[0]), float(row[1])
-        sigma                 = env._sigma(dvol)
+        row       = env.data[min(env.idx, len(env.data) - 1)]
+        S, dvol   = float(row[0]), float(row[1])
+        sigma     = env._sigma(dvol)
 
-        action, _             = model.predict(obs, deterministic=True)
-        action_id             = int(action)
+        action, _ = model.predict(obs, deterministic=True)
+        action_id = int(action)
 
         obs, reward, terminated, truncated, _ = env.step(action_id)
         total_reward += float(reward)
         steps        += 1
 
         if action_id != 0:
-            instrument       = None
-            portfolio_delta  = 0.0
-            # Actual date of this candle — use as historical timestamp
-            step_idx         = max(0, env.idx - 1)
-            current_date     = datetime.combine(dates[step_idx].date(), datetime.min.time(), tzinfo=timezone.utc)
+            instrument      = None
+            portfolio_delta = 0.0
+            step_idx        = max(0, env.idx - 1)
+            current_date    = datetime.combine(dates[step_idx].date(), datetime.min.time(), tzinfo=timezone.utc)
 
             if env.call_pos:
-                T            = env.call_pos["dte"] / 365.0
+                T             = env.call_pos["dte"] / 365.0
                 portfolio_delta += bs_delta(S, env.call_pos["strike"], T, env.r, sigma, "call")
-                instrument   = _instrument_label(current_date, env.call_pos["dte"], env.call_pos["strike"], "call")
+                instrument    = _instrument_label(current_date, env.call_pos["dte"], env.call_pos["strike"], "call")
 
             if env.put_pos:
-                T            = env.put_pos["dte"] / 365.0
+                T             = env.put_pos["dte"] / 365.0
                 portfolio_delta += bs_delta(S, env.put_pos["strike"], T, env.r, sigma, "put")
                 if instrument is None:
                     instrument = _instrument_label(current_date, env.put_pos["dte"], env.put_pos["strike"], "put")
 
-            _post_action(nestjs_url, api_key, run_id, {
+            pending.append({
                 "actionType": _ACTION_TYPE.get(action_id, "hold"),
+                "timestamp":  current_date.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "instrument": instrument,
                 "btcPrice":   round(S, 2),
                 "delta":      round(portfolio_delta, 4),
                 "ivRank":     round(dvol, 2),
                 "pnlBtc":     round(float(reward) * env_cfg["initial_margin_btc"], 6),
                 "reason":     _action_reason(action_id),
-            }, timestamp=current_date)
-            actions_logged += 1
+            })
 
         if terminated or truncated:
             break
+
+    _flush_actions(nestjs_url, api_key, run_id, pending)
+    actions_logged = len(pending)
 
     equity_btc = float(env.margin_balance)
     pnl_btc    = equity_btc - env_cfg["initial_margin_btc"]

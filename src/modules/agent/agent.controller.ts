@@ -7,7 +7,7 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBody, ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
+import { ApiBody, ApiOperation, ApiQuery, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { ApiKeyGuard } from '../../common/guards/api-key.guard';
 import { ScopesGuard } from '../../common/guards/scopes.guard';
 import { RequireScopes } from '../../common/decorators/require-scopes.decorator';
@@ -61,6 +61,7 @@ export class AgentController {
   @Get('runs')
   @RequireScopes(ApiKeyScope.AGENT_READ)
   @ApiOperation({ summary: 'List your agent runs' })
+  @ApiQuery({ name: 'status', required: false, enum: AgentRunStatus })
   listRuns(
     @CurrentUser() user: { id: string },
     @Query('status') status?: AgentRunStatus,
@@ -174,11 +175,53 @@ export class AgentController {
       reason?: string;
     },
   ) {
+    const { timestamp, ...rest } = body;
     return this.agentService.logAction({
       runId,
-      ...body,
-      ...(body.timestamp ? { timestamp: new Date(body.timestamp) } : {}),
+      ...rest,
+      ...(timestamp ? { timestamp: new Date(timestamp) } : {}),
     });
+  }
+
+  @Post('runs/:id/actions/batch')
+  @RequireScopes(ApiKeyScope.AGENT_WRITE)
+  @ApiOperation({ summary: 'Bulk-insert actions from a completed backtest episode (single transaction)' })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['actions'],
+      properties: {
+        actions: {
+          type: 'array',
+          items: {
+            type: 'object',
+            required: ['actionType'],
+            properties: {
+              actionType: { type: 'string' },
+              timestamp:  { type: 'string', format: 'date-time' },
+              instrument: { type: 'string' },
+              btcPrice:   { type: 'number' },
+              delta:      { type: 'number' },
+              ivRank:     { type: 'number' },
+              pnlBtc:     { type: 'number' },
+              reason:     { type: 'string' },
+            },
+          },
+        },
+      },
+    },
+  })
+  logActionBatch(
+    @Param('id') runId: string,
+    @Body() body: { actions: any[] },
+  ) {
+    return this.agentService.logActionBatch(
+      runId,
+      body.actions.map((a) => ({
+        ...a,
+        ...(a.timestamp ? { timestamp: new Date(a.timestamp) } : {}),
+      })),
+    );
   }
 
   @Get('runs/:id/actions')

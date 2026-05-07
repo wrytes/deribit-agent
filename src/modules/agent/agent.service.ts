@@ -130,6 +130,41 @@ export class AgentService {
   // Actions
   // ---------------------------------------------------------------------------
 
+  async logActionBatch(runId: string, actions: Omit<LogActionDto, 'runId'>[]) {
+    const run = await this.prisma.agentRun.findUnique({ where: { id: runId } });
+    if (!run) throw new NotFoundException('Agent run not found');
+    if (!actions.length) return { logged: 0 };
+
+    await this.prisma.agentAction.createMany({
+      data: actions.map((a) => ({
+        runId,
+        actionType:    a.actionType,
+        ...(a.timestamp ? { timestamp: a.timestamp } : {}),
+        instrument:    a.instrument,
+        quantity:      a.quantity,
+        price:         a.price,
+        orderId:       a.orderId,
+        btcPrice:      a.btcPrice,
+        delta:         a.delta,
+        ivRank:        a.ivRank,
+        executedPrice: a.executedPrice,
+        pnlBtc:        a.pnlBtc,
+        reason:        a.reason,
+      })),
+    });
+
+    const totalPnl = actions.reduce((s, a) => s + (Number(a.pnlBtc) || 0), 0);
+    await this.prisma.agentRun.update({
+      where: { id: runId },
+      data: {
+        totalActions:    { increment: actions.length },
+        realizedPnlBtc:  { increment: totalPnl },
+      },
+    });
+
+    return { logged: actions.length };
+  }
+
   async logAction(dto: LogActionDto) {
     const run = await this.prisma.agentRun.findUnique({ where: { id: dto.runId } });
     if (!run) throw new NotFoundException('Agent run not found');
