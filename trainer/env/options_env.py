@@ -174,16 +174,20 @@ class OptionsEnv(gym.Env):
         if not positions:
             return 0.0
         shocks = _PM_PRICE_SHOCKS if self.expiry_days <= 30 else _PM_ALL_SHOCKS
+        # Baseline prices are invariant across all shock scenarios — compute once
+        baselines = [
+            bs_price(S, pos["strike"], pos["dte"] / 365.0, self.r, sigma, opt_type)
+            for pos, opt_type in positions
+        ]
         for price_shock in shocks:
             S2 = S * (1.0 + price_shock)
             for iv_mult in self._pm_iv_shocks:
                 sigma2 = max(sigma * (1.0 + iv_mult), 0.01)
                 pnl    = 0.0
-                for pos, opt_type in positions:
-                    T       = pos["dte"] / 365.0
-                    current = bs_price(S,  pos["strike"], T, self.r, sigma,  opt_type)
-                    stressed= bs_price(S2, pos["strike"], T, self.r, sigma2, opt_type)
-                    pnl    -= (stressed - current) * pos["size"]
+                for i, (pos, opt_type) in enumerate(positions):
+                    T        = pos["dte"] / 365.0
+                    stressed = bs_price(S2, pos["strike"], T, self.r, sigma2, opt_type)
+                    pnl     -= (stressed - baselines[i]) * pos["size"]
                 worst = min(worst, pnl)
         return max(0.0, -worst)
 
