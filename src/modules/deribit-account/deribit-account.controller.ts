@@ -21,7 +21,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { User } from '@prisma/client';
 
 @Controller('deribit-account')
-@ApiTags('Deribit Account')
+@ApiTags('deribit-account')
 @UseGuards(ApiKeyGuard)
 @ApiSecurity('api-key')
 export class DeribitAccountController {

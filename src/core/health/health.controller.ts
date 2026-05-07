@@ -10,7 +10,7 @@ import { ApiTags, ApiOperation, ApiResponse } from '@nestjs/swagger';
 import { PrismaService } from '../database/prisma.service';
 
 @Controller('health')
-@ApiTags('Health')
+@ApiTags('misc')
 export class HealthController {
   constructor(
     private health: HealthCheckService,

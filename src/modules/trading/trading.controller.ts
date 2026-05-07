@@ -21,7 +21,7 @@ import { ApiKeyScope } from '@prisma/client';
 import type { User } from '@prisma/client';
 
 @Controller('trading')
-@ApiTags('Trading')
+@ApiTags('trading')
 @UseGuards(ApiKeyGuard, ScopesGuard)
 @ApiSecurity('api-key')
 export class TradingController {

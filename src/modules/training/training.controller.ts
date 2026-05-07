@@ -8,7 +8,7 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
-import { ApiBody, ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
+import { ApiBody, ApiOperation, ApiQuery, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { ApiKeyGuard } from '../../common/guards/api-key.guard';
 import { RequireScopes } from '../../common/decorators/require-scopes.decorator';
 import { ApiKeyScope, TrainingStatus } from '@prisma/client';
@@ -76,6 +76,7 @@ export class TrainingController {
   @Get('sessions')
   @RequireScopes(ApiKeyScope.TRAINING_READ)
   @ApiOperation({ summary: 'List training sessions (optionally filter by status)' })
+  @ApiQuery({ name: 'status', required: false, enum: TrainingStatus })
   listSessions(@Query('status') status?: TrainingStatus) {
     return this.trainingService.listSessions(status);
   }

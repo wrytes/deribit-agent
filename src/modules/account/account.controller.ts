@@ -9,7 +9,7 @@ import { ApiKeyScope } from '@prisma/client';
 import type { User } from '@prisma/client';
 
 @Controller('account')
-@ApiTags('Account')
+@ApiTags('account')
 @UseGuards(ApiKeyGuard, ScopesGuard)
 @ApiSecurity('api-key')
 export class AccountController {

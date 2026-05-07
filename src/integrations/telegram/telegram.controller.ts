@@ -6,11 +6,13 @@ import {
   Headers,
   UnauthorizedException,
 } from '@nestjs/common';
+import { ApiTags } from '@nestjs/swagger';
 import { ConfigService } from '@nestjs/config';
 import { InjectBot } from 'nestjs-telegraf';
 import { Telegraf } from 'telegraf';
 import * as crypto from 'crypto';
 
+@ApiTags('misc')
 @Controller('telegram')
 export class TelegramController {
   private readonly logger = new Logger(TelegramController.name);

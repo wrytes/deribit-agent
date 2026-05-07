@@ -22,13 +22,13 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { User } from '@prisma/client';
 
 @Controller('auth')
-@ApiTags('Authentication')
+@ApiTags('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
   @Get('verify')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Verify magic link and receive API key' })
+  @ApiOperation({ summary: 'Verify magic link and receive API key (no auth required)' })
   @ApiQuery({ name: 'token', required: true, description: '32-character magic link token' })
   @ApiResponse({ status: 200, description: 'API key created successfully' })
   @ApiResponse({ status: 400, description: 'Invalid or expired magic link token' })
