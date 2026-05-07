@@ -8,11 +8,11 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
+import { ApiBody, ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { ApiKeyGuard } from '../../common/guards/api-key.guard';
 import { RequireScopes } from '../../common/decorators/require-scopes.decorator';
 import { ApiKeyScope, TrainingStatus } from '@prisma/client';
 import { TrainingService } from './training.service';
-import { ApiOperation, ApiTags, ApiSecurity } from '@nestjs/swagger';
 
 @ApiTags('training')
 @ApiSecurity('api-key')
@@ -28,6 +28,26 @@ export class TrainingController {
   @Post('sessions')
   @RequireScopes(ApiKeyScope.TRAINING_WRITE)
   @ApiOperation({ summary: 'Create and queue a new training session' })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['name', 'currency', 'dataFrom', 'dataTo'],
+      properties: {
+        name:        { type: 'string', example: 'btc-ppo-v1' },
+        description: { type: 'string', example: 'Baseline PPO on 1-year BTC daily data' },
+        currency:    { type: 'string', enum: ['BTC', 'ETH'], example: 'BTC' },
+        dataFrom:    { type: 'string', format: 'date-time', example: '2024-01-01T00:00:00.000Z' },
+        dataTo:      { type: 'string', format: 'date-time', example: '2025-01-01T00:00:00.000Z' },
+        resolution:  { type: 'string', example: '1D', description: 'Candle resolution used for training data' },
+        algorithm:   { type: 'string', enum: ['PPO', 'DQN', 'A2C'], example: 'PPO' },
+        hyperparams: {
+          type: 'object',
+          example: { training: { total_timesteps: 500000, learning_rate: 0.003 } },
+          description: 'Nested env/training overrides — merged with defaults in the trainer',
+        },
+      },
+    },
+  })
   createSession(
     @Body()
     body: {
@@ -55,7 +75,7 @@ export class TrainingController {
 
   @Get('sessions')
   @RequireScopes(ApiKeyScope.TRAINING_READ)
-  @ApiOperation({ summary: 'List training sessions' })
+  @ApiOperation({ summary: 'List training sessions (optionally filter by status)' })
   listSessions(@Query('status') status?: TrainingStatus) {
     return this.trainingService.listSessions(status);
   }
@@ -80,7 +100,7 @@ export class TrainingController {
 
   @Get('queue')
   @RequireScopes(ApiKeyScope.TRAINING_READ)
-  @ApiOperation({ summary: 'Training queue stats' })
+  @ApiOperation({ summary: 'BullMQ queue stats (waiting / active / completed / failed)' })
   queueStats() {
     return this.trainingService.getQueueStats();
   }
@@ -91,7 +111,7 @@ export class TrainingController {
 
   @Get('models')
   @RequireScopes(ApiKeyScope.TRAINING_READ)
-  @ApiOperation({ summary: 'List all trained models' })
+  @ApiOperation({ summary: 'List all trained models with their evaluation metrics' })
   listModels() {
     return this.trainingService.listModels();
   }
@@ -106,6 +126,25 @@ export class TrainingController {
   @Post('models')
   @RequireScopes(ApiKeyScope.TRAINING_WRITE)
   @ApiOperation({ summary: 'Manually register an externally trained model' })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['sessionId', 'name', 'storagePath'],
+      properties: {
+        sessionId:   { type: 'string', example: 'cuid...' },
+        name:        { type: 'string', example: 'btc-ppo-v1' },
+        storagePath: { type: 'string', example: '/app/models/btc-ppo-v1.zip' },
+        storageType: { type: 'string', enum: ['local', 's3'], example: 'local' },
+        sizeBytes:   { type: 'number', example: 524288 },
+        meanReward:  { type: 'number', example: 1.12 },
+        stdReward:   { type: 'number', example: 0.3 },
+        sharpeRatio: { type: 'number', example: 1.8 },
+        maxDrawdown: { type: 'number', example: 0.12 },
+        winRate:     { type: 'number', example: 0.62 },
+        metadata:    { type: 'object', example: {} },
+      },
+    },
+  })
   registerModel(
     @Body()
     body: {

@@ -92,6 +92,7 @@ model MarketSnapshot {
   rv30d        Decimal?
   ivRank       Decimal?
   ivPercentile Decimal?
+  markIv       Decimal?  // perpetual mark implied volatility
 
   @@index([currency, timestamp])
 }

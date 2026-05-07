@@ -23,6 +23,7 @@ export interface MarketConditions {
   ivRank: number | null;    // 0–100
   ivPercentile: number | null; // 0–100
   ivOverRv: number | null;  // DVOL / (rv30d * 100) ratio — > 1 means IV > RV (premium elevated)
+  markIv: number | null;    // perpetual mark implied volatility
   timestamp: Date;
 }
 
@@ -67,13 +68,17 @@ export class MarketDataService implements OnModuleInit {
     const cached = this.fromCache<MarketConditions>(key);
     if (cached !== null) return cached;
 
-    const [indexPrice, dvolData] = await Promise.allSettled([
+    const perpInstrument = currency === 'BTC' ? 'BTC-PERPETUAL' : 'ETH-PERPETUAL';
+
+    const [indexPrice, dvolData, markIvResult] = await Promise.allSettled([
       this.getIndexPrice(currency),
       this.fetchDvolHistory(currency, IV_RANK_DAYS),
+      this.fetchPerpMarkIv(perpInstrument),
     ]);
 
     const price = indexPrice.status === 'fulfilled' ? indexPrice.value : 0;
     const dvol = dvolData.status === 'fulfilled' ? dvolData.value : [];
+    const markIv = markIvResult.status === 'fulfilled' ? markIvResult.value : null;
 
     const currentDvol = dvol.length > 0 ? dvol[dvol.length - 1] : null;
     const ivRank = dvol.length > 10 ? this.computeIvRank(dvol) : null;
@@ -93,6 +98,7 @@ export class MarketDataService implements OnModuleInit {
       ivRank,
       ivPercentile,
       ivOverRv,
+      markIv,
       timestamp: new Date(),
     };
 
@@ -214,6 +220,7 @@ export class MarketDataService implements OnModuleInit {
         rv30d: conditions.rv30d ?? undefined,
         ivRank: conditions.ivRank ?? undefined,
         ivPercentile: conditions.ivPercentile ?? undefined,
+        markIv: conditions.markIv ?? undefined,
       },
     });
   }
@@ -290,6 +297,26 @@ export class MarketDataService implements OnModuleInit {
     this.cache.set(key, { value, expiresAt: Date.now() + ttlMs });
   }
 
+  private async fetchPerpMarkIv(instrument: string): Promise<number | null> {
+    const key = `markiv_${instrument}`;
+    const cached = this.fromCache<number>(key);
+    if (cached !== null) return cached;
+
+    const url = new URL('https://www.deribit.com/api/v2/public/get_ticker');
+    url.searchParams.set('instrument_name', instrument);
+
+    try {
+      const res = await fetch(url.toString(), { signal: AbortSignal.timeout(10_000) });
+      if (!res.ok) return null;
+      const json = await res.json() as any;
+      const iv = json.result?.mark_iv ?? null;
+      if (iv !== null) this.toCache(key, iv, CACHE_TTL_MS);
+      return iv;
+    } catch {
+      return null;
+    }
+  }
+
   private emptyConditions(currency: string): MarketConditions {
     return {
       currency,
@@ -299,6 +326,7 @@ export class MarketDataService implements OnModuleInit {
       ivRank: null,
       ivPercentile: null,
       ivOverRv: null,
+      markIv: null,
       timestamp: new Date(),
     };
   }

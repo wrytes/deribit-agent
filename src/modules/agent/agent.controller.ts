@@ -7,13 +7,13 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
+import { ApiBody, ApiOperation, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { ApiKeyGuard } from '../../common/guards/api-key.guard';
 import { ScopesGuard } from '../../common/guards/scopes.guard';
 import { RequireScopes } from '../../common/decorators/require-scopes.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ApiKeyScope, AgentRunStatus } from '@prisma/client';
 import { AgentService } from './agent.service';
-import { ApiOperation, ApiTags, ApiSecurity } from '@nestjs/swagger';
 
 @ApiTags('agent')
 @ApiSecurity('api-key')
@@ -28,7 +28,21 @@ export class AgentController {
 
   @Post('runs')
   @RequireScopes(ApiKeyScope.AGENT_WRITE)
-  @ApiOperation({ summary: 'Create a new agent run (live or paper)' })
+  @ApiOperation({ summary: 'Create a new agent run (paper or live)' })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['name', 'currency', 'initialCapitalBtc'],
+      properties: {
+        sessionId:         { type: 'string', example: 'cuid...', description: 'Trained model session to use' },
+        name:              { type: 'string', example: 'btc-paper-run-1' },
+        currency:          { type: 'string', enum: ['BTC', 'ETH'], example: 'BTC' },
+        isLive:            { type: 'boolean', example: false, description: 'false = paper trading, true = live orders' },
+        initialCapitalBtc: { type: 'number', example: 0.1 },
+        notes:             { type: 'string', example: 'First paper run with btc-ppo-v1' },
+      },
+    },
+  })
   createRun(
     @CurrentUser() user: { id: string },
     @Body()
@@ -56,21 +70,21 @@ export class AgentController {
 
   @Get('runs/:id')
   @RequireScopes(ApiKeyScope.AGENT_READ)
-  @ApiOperation({ summary: 'Get agent run details with recent actions' })
+  @ApiOperation({ summary: 'Get agent run details with last 100 actions' })
   getRun(@CurrentUser() user: { id: string }, @Param('id') id: string) {
     return this.agentService.getRun(user.id, id);
   }
 
   @Get('runs/:id/summary')
   @RequireScopes(ApiKeyScope.AGENT_READ)
-  @ApiOperation({ summary: 'Aggregated performance summary for a run' })
+  @ApiOperation({ summary: 'Aggregated action breakdown and P&L for a run' })
   getRunSummary(@CurrentUser() user: { id: string }, @Param('id') id: string) {
     return this.agentService.getRunSummary(user.id, id);
   }
 
   @Post('runs/:id/stop')
   @RequireScopes(ApiKeyScope.AGENT_WRITE)
-  @ApiOperation({ summary: 'Stop an active agent run' })
+  @ApiOperation({ summary: 'Stop an active or paused agent run' })
   stopRun(@CurrentUser() user: { id: string }, @Param('id') id: string) {
     return this.agentService.stopRun(user.id, id);
   }
@@ -95,7 +109,26 @@ export class AgentController {
 
   @Post('runs/:id/actions')
   @RequireScopes(ApiKeyScope.AGENT_WRITE)
-  @ApiOperation({ summary: 'Log an action taken by the running agent' })
+  @ApiOperation({ summary: 'Log a model action (called by the agent process)' })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      required: ['actionType'],
+      properties: {
+        actionType:    { type: 'string', example: 'sell_call', description: 'hold | sell_call | sell_put | buy_call | buy_put | close | hedge' },
+        instrument:    { type: 'string', example: 'BTC-28MAR25-70000-C' },
+        quantity:      { type: 'number', example: 0.1 },
+        price:         { type: 'number', example: 0.002 },
+        orderId:       { type: 'string', example: 'deribit-order-id' },
+        btcPrice:      { type: 'number', example: 65000 },
+        delta:         { type: 'number', example: -0.35 },
+        ivRank:        { type: 'number', example: 72.5 },
+        executedPrice: { type: 'number', example: 0.0019 },
+        pnlBtc:        { type: 'number', example: 0.00012 },
+        reason:        { type: 'string', example: 'IV rank > 70, sell OTM strangle' },
+      },
+    },
+  })
   logAction(
     @Param('id') runId: string,
     @Body()
@@ -118,7 +151,7 @@ export class AgentController {
 
   @Get('runs/:id/actions')
   @RequireScopes(ApiKeyScope.AGENT_READ)
-  @ApiOperation({ summary: 'Get action log for an agent run' })
+  @ApiOperation({ summary: 'Get the action log for an agent run (newest first)' })
   getActions(
     @CurrentUser() user: { id: string },
     @Param('id') runId: string,
