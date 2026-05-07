@@ -50,6 +50,19 @@ export class TradingController {
     return this.tradingService.cancel(user.id, orderId);
   }
 
+  @Get('positions')
+  @RequireScopes(ApiKeyScope.AGENT_READ)
+  @ApiOperation({ summary: 'Get open positions by currency' })
+  @ApiQuery({ name: 'currency', required: true })
+  @ApiQuery({ name: 'kind', required: false, description: 'future | option | spot' })
+  async getPositions(
+    @CurrentUser() user: User,
+    @Query('currency') currency: string,
+    @Query('kind') kind?: string,
+  ) {
+    return this.tradingService.getPositions(user.id, currency, kind);
+  }
+
   @Get('orders')
   @RequireScopes(ApiKeyScope.AGENT_READ)
   @ApiOperation({ summary: 'Get open orders by currency' })
