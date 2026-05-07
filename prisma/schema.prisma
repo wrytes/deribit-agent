@@ -7,20 +7,24 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ---------------------------------------------------------------------------
+// Auth
+// ---------------------------------------------------------------------------
+
 model User {
   id             String  @id @default(cuid())
   telegramId     BigInt  @unique
   telegramHandle String?
 
-  // Notification prefs (deribit-specific)
-  notifyOrderFilled    Boolean @default(true)
-  notifyOrderCancelled Boolean @default(true)
-  notifyErrors         Boolean @default(true)
+  notifyTraining Boolean @default(true)
+  notifyAgent    Boolean @default(true)
+  notifyErrors   Boolean @default(true)
 
   apiKeys        ApiKey[]
   magicLinks     MagicLink[]
   deribitAccount DeribitAccount?
   strategies     Strategy[]
+  agentRuns      AgentRun[]
 }
 
 model DeribitAccount {
@@ -39,10 +43,12 @@ model DeribitAccount {
 enum ApiKeyScope {
   ACCOUNT_READ
   MARKET_READ
-  WALLET_READ
-  WALLET_WRITE
-  TRADING_READ
-  TRADING_WRITE
+  DATA_READ
+  DATA_WRITE
+  TRAINING_READ
+  TRAINING_WRITE
+  AGENT_READ
+  AGENT_WRITE
   ADMIN
 }
 
@@ -51,7 +57,7 @@ model ApiKey {
   userId     String
   keyId      String        @unique
   secretHash String
-  scopes     ApiKeyScope[] @default([ACCOUNT_READ, MARKET_READ, TRADING_READ])
+  scopes     ApiKeyScope[] @default([ACCOUNT_READ, MARKET_READ, DATA_READ])
   expiresAt  DateTime?
   revokedAt  DateTime?
   lastUsedAt DateTime?
@@ -64,7 +70,7 @@ model MagicLink {
   id        String        @id @default(cuid())
   userId    String
   token     String        @unique
-  scopes    ApiKeyScope[] @default([ACCOUNT_READ, MARKET_READ, TRADING_READ])
+  scopes    ApiKeyScope[] @default([ACCOUNT_READ, MARKET_READ, DATA_READ])
   expiresAt DateTime
   usedAt    DateTime?
   createdAt DateTime      @default(now())
@@ -77,22 +83,21 @@ model MagicLink {
 // ---------------------------------------------------------------------------
 
 /// Hourly snapshot of market-wide metrics per currency (BTC, ETH).
-/// Used for IV rank computation, realized vol, and USD conversion.
 model MarketSnapshot {
   id           String   @id @default(cuid())
-  currency     String // BTC | ETH
+  currency     String
   timestamp    DateTime @default(now())
-  indexPrice   Decimal // BTC/ETH index price in USD
-  dvolIndex    Decimal? // Deribit Volatility Index value (DVOL)
-  rv30d        Decimal? // 30-day realized volatility (annualised, 0–1)
-  ivRank       Decimal? // IV Rank 0–100  ((cur - min52w) / (max52w - min52w) * 100)
-  ivPercentile Decimal? // % of days in last year where DVOL was below current
+  indexPrice   Decimal
+  dvolIndex    Decimal?
+  rv30d        Decimal?
+  ivRank       Decimal?
+  ivPercentile Decimal?
 
   @@index([currency, timestamp])
 }
 
 // ---------------------------------------------------------------------------
-// Strategies
+// Strategies (used by scheduler snapshots and future agent execution)
 // ---------------------------------------------------------------------------
 
 enum StrategyType {
@@ -113,7 +118,6 @@ enum StrategyStatus {
   CLOSED
 }
 
-/// A named, capital-allocated trading strategy with a lifecycle and configurable params.
 model Strategy {
   id          String         @id @default(cuid())
   userId      String
@@ -122,13 +126,8 @@ model Strategy {
   status      StrategyStatus @default(DRAFT)
   description String?
 
-  /// BTC amount ring-fenced for this strategy
-  allocationBtc Decimal @default(0)
-
-  /// Strategy-specific configuration stored as JSON.
-  /// Keys vary by type: ivrThreshold, dteRange, strikeDelta, maxLossUsd, autoRoll, targetDelta, …
-  params Json @default("{}")
-
+  allocationBtc  Decimal @default(0)
+  params         Json    @default("{}")
   realizedPnlBtc Decimal @default(0)
 
   createdAt DateTime  @default(now())
@@ -142,18 +141,17 @@ model Strategy {
   @@index([userId, status])
 }
 
-/// A single option or perpetual leg associated with a strategy.
 model StrategyLeg {
   id             String    @id @default(cuid())
   strategyId     String
-  instrumentName String // e.g. BTC-28MAR25-70000-C
-  direction      String // buy | sell
+  instrumentName String
+  direction      String
   quantity       Decimal
   openPrice      Decimal
   openTimestamp  DateTime  @default(now())
   closePrice     Decimal?
   closeTimestamp DateTime?
-  orderId        String? // Deribit order_id for cross-reference
+  orderId        String?
   isOpen         Boolean   @default(true)
 
   strategy Strategy @relation(fields: [strategyId], references: [id], onDelete: Cascade)
@@ -161,22 +159,217 @@ model StrategyLeg {
   @@index([strategyId, isOpen])
 }
 
-/// Hourly snapshot of a strategy's greeks and unrealized PnL.
 model StrategySnapshot {
   id         String   @id @default(cuid())
   strategyId String
   timestamp  DateTime @default(now())
 
-  // Aggregated greeks across all open legs
-  delta Decimal?
-  gamma Decimal?
-  theta Decimal?
-  vega  Decimal?
-
+  delta            Decimal?
+  gamma            Decimal?
+  theta            Decimal?
+  vega             Decimal?
   unrealizedPnlBtc Decimal?
-  btcIndexPrice    Decimal // BTC price at snapshot time (for USD conversion)
+  btcIndexPrice    Decimal
 
   strategy Strategy @relation(fields: [strategyId], references: [id], onDelete: Cascade)
 
   @@index([strategyId, timestamp])
+}
+
+// ---------------------------------------------------------------------------
+// Historical Data
+// ---------------------------------------------------------------------------
+
+/// OHLCV candle stored per instrument and resolution.
+/// resolution values mirror Deribit: 1 | 3 | 5 | 10 | 15 | 30 | 60 | 120 | 180 | 360 | 720 | 1D | 1W
+model Candle {
+  id         String   @id @default(cuid())
+  instrument String   // e.g. BTC-PERPETUAL, ETH-PERPETUAL, BTC_USDC
+  resolution String   // e.g. 60, 1D
+  timestamp  DateTime // candle open timestamp (UTC)
+  open       Decimal
+  high       Decimal
+  low        Decimal
+  close      Decimal
+  volume     Decimal  @default(0)
+  source     String   @default("deribit")
+
+  @@unique([instrument, resolution, timestamp])
+  @@index([instrument, resolution, timestamp])
+}
+
+/// Point-in-time snapshot of a single option instrument (IV surface row).
+model OptionSnapshot {
+  id              String   @id @default(cuid())
+  capturedAt      DateTime @default(now())
+  instrument      String   // e.g. BTC-28MAR25-70000-C
+  currency        String   // BTC | ETH
+  expiry          String   // e.g. 28MAR25
+  strike          Decimal
+  optionType      String   // call | put
+
+  markIv          Decimal?
+  bidIv           Decimal?
+  askIv           Decimal?
+  markPrice       Decimal? // in BTC
+  bidPrice        Decimal?
+  askPrice        Decimal?
+  underlyingPrice Decimal? // BTC index price at capture time
+
+  delta           Decimal?
+  gamma           Decimal?
+  theta           Decimal?
+  vega            Decimal?
+  rho             Decimal?
+
+  openInterest    Decimal?
+  volume24h       Decimal?
+
+  @@index([currency, expiry, capturedAt])
+  @@index([instrument, capturedAt])
+}
+
+// ---------------------------------------------------------------------------
+// Training
+// ---------------------------------------------------------------------------
+
+enum TrainingStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+/// A training job that produces a TrainedModel.
+model TrainingSession {
+  id          String         @id @default(cuid())
+  name        String
+  description String?
+  status      TrainingStatus @default(QUEUED)
+
+  // Dataset config
+  currency   String // BTC | ETH
+  dataFrom   DateTime
+  dataTo     DateTime
+  resolution String   @default("1D")
+
+  // Model config
+  algorithm  String @default("PPO") // PPO | DQN | A2C
+  hyperparams Json  @default("{}")
+
+  // Runtime
+  jobId        String?   // BullMQ job ID
+  startedAt    DateTime?
+  completedAt  DateTime?
+  errorMessage String?
+
+  // Results
+  totalTimesteps Int?
+  finalReward    Decimal?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  model     TrainedModel?
+  agentRuns AgentRun[]
+
+  @@index([status, createdAt])
+}
+
+/// Model artifact metadata produced by a completed TrainingSession.
+model TrainedModel {
+  id        String @id @default(cuid())
+  sessionId String @unique
+  name      String
+
+  storagePath String // local fs path or S3 key
+  storageType String @default("local") // local | s3
+  sizeBytes   Int?
+
+  // Evaluation metrics
+  meanReward  Decimal?
+  stdReward   Decimal?
+  sharpeRatio Decimal?
+  maxDrawdown Decimal?
+  winRate     Decimal?
+
+  metadata  Json     @default("{}")
+  createdAt DateTime @default(now())
+
+  session TrainingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Agent Execution
+// ---------------------------------------------------------------------------
+
+enum AgentRunStatus {
+  ACTIVE
+  PAUSED
+  STOPPED
+  COMPLETED
+  ERROR
+}
+
+/// A live (or paper-trading) run of a trained model.
+model AgentRun {
+  id        String         @id @default(cuid())
+  userId    String
+  sessionId String?        // which TrainingSession/model powers this run
+  name      String
+  status    AgentRunStatus @default(ACTIVE)
+
+  currency String  // BTC | ETH
+  isLive   Boolean @default(false) // false = paper trading
+
+  initialCapitalBtc Decimal
+  currentCapitalBtc Decimal?
+
+  startedAt  DateTime  @default(now())
+  stoppedAt  DateTime?
+
+  totalActions     Int      @default(0)
+  realizedPnlBtc   Decimal  @default(0)
+  unrealizedPnlBtc Decimal?
+
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user    User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session TrainingSession? @relation(fields: [sessionId], references: [id])
+  actions AgentAction[]
+
+  @@index([userId, status])
+  @@index([status, createdAt])
+}
+
+/// A single decision / order placed by an AgentRun.
+model AgentAction {
+  id    String @id @default(cuid())
+  runId String
+
+  timestamp  DateTime @default(now())
+  actionType String   // hold | sell_call | sell_put | buy_call | buy_put | close | hedge
+
+  instrument String?
+  quantity   Decimal?
+  price      Decimal?
+  orderId    String? // Deribit order_id (live runs only)
+
+  // Market state at decision time
+  btcPrice Decimal?
+  delta    Decimal?
+  ivRank   Decimal?
+
+  executedPrice Decimal?
+  pnlBtc        Decimal?
+  reason        String?  // model explanation
+
+  run AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId, timestamp])
 }

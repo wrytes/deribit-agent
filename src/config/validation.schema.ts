@@ -21,13 +21,13 @@ export const validationSchema = Joi.object({
 	DERIBIT_CLIENT_SECRET: Joi.string().allow('').optional(),
 	DERIBIT_BASE_URL: Joi.string().default('wss://www.deribit.com/ws/api/v2'),
 
-	// AI
-	ANTHROPIC_API_KEY: Joi.string().allow('').optional(),
-
-	// Telegram
+	// Telegram (optional — agent runs without it)
 	TELEGRAM_BOT_TOKEN: Joi.string().allow('').optional(),
 	TELEGRAM_WEBHOOK_DOMAIN: Joi.string().allow('').optional(),
 	TELEGRAM_WEBHOOK_PATH: Joi.string().allow('').default('').optional(),
+
+	// Training runner (Python FastAPI sidecar)
+	TRAINER_URL: Joi.string().default('http://localhost:8000'),
 
 	// Logging
 	LOG_LEVEL: Joi.string()

@@ -1,9 +1,10 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { LoggerModule } from 'nestjs-pino';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ScheduleModule } from '@nestjs/schedule';
+import { BullModule } from '@nestjs/bullmq';
 
 // Config
 import appConfig from './config/app.config';
@@ -11,7 +12,6 @@ import databaseConfig from './config/database.config';
 import redisConfig from './config/redis.config';
 import telegramConfig from './config/telegram.config';
 import deribitConfig from './config/deribit.config';
-import aiConfig from './config/ai.config';
 import { validationSchema } from './config/validation.schema';
 
 // Core modules
@@ -21,18 +21,17 @@ import { HealthModule } from './core/health/health.module';
 // Integration modules
 import { TelegramModule } from './integrations/telegram/telegram.module';
 import { DeribitModule } from './integrations/deribit/deribit.module';
-import { AiModule } from './integrations/ai/ai.module';
 
 // Feature modules
 import { AuthModule } from './modules/auth/auth.module';
 import { DeribitAccountModule } from './modules/deribit-account/deribit-account.module';
 import { AccountModule } from './modules/account/account.module';
-import { MarketModule } from './modules/market/market.module';
-import { WalletModule } from './modules/wallet/wallet.module';
 import { TradingModule } from './modules/trading/trading.module';
 import { MarketDataModule } from './modules/market-data/market-data.module';
-import { StrategyModule } from './modules/strategy/strategy.module';
 import { SchedulerModule } from './modules/scheduler/scheduler.module';
+import { DataIngestionModule } from './modules/data-ingestion/data-ingestion.module';
+import { TrainingModule } from './modules/training/training.module';
+import { AgentModule } from './modules/agent/agent.module';
 
 // Common modules
 import { EventsModule } from './common/events/events.module';
@@ -45,7 +44,7 @@ import { AppService } from './app.service';
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
-      load: [appConfig, databaseConfig, redisConfig, telegramConfig, deribitConfig, aiConfig],
+      load: [appConfig, databaseConfig, redisConfig, telegramConfig, deribitConfig],
       validationSchema,
       validationOptions: {
         allowUnknown: true,
@@ -86,20 +85,31 @@ import { AppService } from './app.service';
       verboseMemoryLeak: true,
     }),
 
+    BullModule.forRootAsync({
+      imports: [ConfigModule],
+      useFactory: (configService: ConfigService) => ({
+        connection: {
+          host: configService.get<string>('redis.host') || 'localhost',
+          port: configService.get<number>('redis.port') || 6379,
+          password: configService.get<string>('redis.password') || undefined,
+        },
+      }),
+      inject: [ConfigService],
+    }),
+
     DatabaseModule,
     HealthModule,
     TelegramModule,
     DeribitModule,
-    AiModule,
     AuthModule,
     DeribitAccountModule,
     AccountModule,
-    MarketModule,
-    WalletModule,
     TradingModule,
     MarketDataModule,
-    StrategyModule,
     SchedulerModule,
+    DataIngestionModule,
+    TrainingModule,
+    AgentModule,
     EventsModule,
   ],
   controllers: [AppController],

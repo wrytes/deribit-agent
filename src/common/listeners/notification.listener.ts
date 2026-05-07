@@ -23,7 +23,7 @@ export class NotificationListener {
       where: { id: event.userId },
     });
 
-    if (!user || !user.notifyOrderFilled) return;
+    if (!user || !user.notifyErrors) return;
 
     const chatId = Number(user.telegramId);
     const message =
@@ -45,7 +45,7 @@ export class NotificationListener {
       where: { id: event.userId },
     });
 
-    if (!user || !user.notifyOrderCancelled) return;
+    if (!user || !user.notifyErrors) return;
 
     const chatId = Number(user.telegramId);
     const message =

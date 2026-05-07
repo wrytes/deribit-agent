@@ -25,7 +25,7 @@ export class AuthService {
     scopes: ApiKeyScope[] = [
       ApiKeyScope.ACCOUNT_READ,
       ApiKeyScope.MARKET_READ,
-      ApiKeyScope.TRADING_READ,
+      ApiKeyScope.DATA_READ,
     ],
   ): Promise<{ token: string; expiresAt: Date }> {
     this.logger.log(`Creating magic link for user ${userId}`);
@@ -83,7 +83,7 @@ export class AuthService {
     scopes: ApiKeyScope[] = [
       ApiKeyScope.ACCOUNT_READ,
       ApiKeyScope.MARKET_READ,
-      ApiKeyScope.TRADING_READ,
+      ApiKeyScope.DATA_READ,
     ],
     expiresInDays?: number,
   ): Promise<{ apiKey: string; expiresAt: Date | null }> {
