@@ -31,28 +31,33 @@ export interface OptionSnapshotResult {
 // Default tracking config
 // ---------------------------------------------------------------------------
 
-/** Instruments and resolutions auto-backfilled on startup and kept live hourly. */
+/** Instruments kept live by the hourly scheduler. Spot index is 1D only (no hourly from Deribit). */
 export const TRACKED_INSTRUMENTS: { instrument: string; resolution: string }[] =
 	[
-		// Perpetual futures (price + volume)
 		{ instrument: 'BTC-PERPETUAL', resolution: '60' },
 		{ instrument: 'BTC-PERPETUAL', resolution: '1D' },
 		{ instrument: 'ETH-PERPETUAL', resolution: '60' },
 		{ instrument: 'ETH-PERPETUAL', resolution: '1D' },
-		// Spot index prices
-		{ instrument: 'btc_usd', resolution: '60' },
 		{ instrument: 'btc_usd', resolution: '1D' },
-		{ instrument: 'eth_usd', resolution: '60' },
 		{ instrument: 'eth_usd', resolution: '1D' },
-		// DVOL — Deribit's implied-volatility index (≈ BTC/ETH VIX)
 		{ instrument: 'btc_dvol', resolution: '60' },
 		{ instrument: 'btc_dvol', resolution: '1D' },
 		{ instrument: 'eth_dvol', resolution: '60' },
 		{ instrument: 'eth_dvol', resolution: '1D' },
 	];
 
-/** How far back to go on first-time backfill. */
-const INITIAL_LOOKBACK_DAYS = 365 * 4;
+/** Startup backfill: 1D only for all 6 series. Hourly fills in once the app is live. */
+const BACKFILL_INSTRUMENTS: { instrument: string; resolution: string }[] = [
+	{ instrument: 'BTC-PERPETUAL', resolution: '1D' },
+	{ instrument: 'ETH-PERPETUAL', resolution: '1D' },
+	{ instrument: 'btc_usd', resolution: '1D' },
+	{ instrument: 'eth_usd', resolution: '1D' },
+	{ instrument: 'btc_dvol', resolution: '1D' },
+	{ instrument: 'eth_dvol', resolution: '1D' },
+];
+
+/** Earliest date with useful data across all series (btc_dvol from 2021-03, eth_dvol from 2021-09). */
+const BACKFILL_START = new Date('2021-01-01');
 
 /** Max candle range per resolution to stay within Deribit API limits. */
 const MAX_RANGE_MS: Record<string, number> = {
@@ -72,6 +77,10 @@ const MAX_RANGE_MS: Record<string, number> = {
 };
 
 const DERIBIT_PUBLIC_REST = 'https://www.deribit.com/api/v2/public';
+
+const DVOL_INSTRUMENTS = new Set(['btc_dvol', 'eth_dvol']);
+const SPOT_INSTRUMENTS = new Set(['btc_usd', 'eth_usd']);
+const DVOL_RES: Record<string, string> = { '60': '3600', '360': '21600', '1D': '86400', '1W': '604800' };
 
 @Injectable()
 export class DataIngestionService implements OnModuleInit {
@@ -94,21 +103,18 @@ export class DataIngestionService implements OnModuleInit {
 	}
 
 	private async runInitialBackfillIfNeeded() {
-		for (const { instrument, resolution } of TRACKED_INSTRUMENTS) {
+		for (const { instrument, resolution } of BACKFILL_INSTRUMENTS) {
 			const count = await this.prisma.candle.count({
 				where: { instrument, resolution },
 			});
 			if (count === 0) {
-				const from = new Date(
-					Date.now() - INITIAL_LOOKBACK_DAYS * 86_400_000,
-				);
 				this.logger.log(
-					`No candles for ${instrument}@${resolution} — backfilling ${INITIAL_LOOKBACK_DAYS}d`,
+					`No candles for ${instrument}@${resolution} — backfilling from ${BACKFILL_START.toISOString().slice(0, 10)}`,
 				);
 				const result = await this.backfillCandles({
 					instrument,
 					resolution,
-					from,
+					from: BACKFILL_START,
 				});
 				this.logger.log(
 					`Initial backfill done: ${instrument}@${resolution} → ${result.inserted} candles`,
@@ -123,84 +129,73 @@ export class DataIngestionService implements OnModuleInit {
 
 	/**
 	 * Backfill OHLCV candles for a given instrument and resolution.
-	 * Chunks the time range to stay within API limits.
-	 * Already-present rows are skipped via upsert (unique index on instrument+resolution+timestamp).
+	 * Routes to the correct Deribit endpoint:
+	 *   - btc_usd / eth_usd  → get_delivery_prices (paginated, 1D only)
+	 *   - btc_dvol / eth_dvol → get_volatility_index_data (chunked)
+	 *   - everything else    → get_tradingview_chart_data (chunked)
 	 */
 	async backfillCandles(dto: BackfillDto): Promise<BackfillResult> {
 		const toTs = (dto.to ?? new Date()).getTime();
 		const fromTs = dto.from.getTime();
-		const maxRange = MAX_RANGE_MS[dto.resolution] ?? 60 * 86_400_000;
 
-		let inserted = 0;
-		let skipped = 0;
-		let cursor = fromTs;
+		// Spot index: single paginated fetch, no chunking
+		if (SPOT_INSTRUMENTS.has(dto.instrument)) {
+			const data = await this.fetchDeliveryPrices(dto.instrument, fromTs, toTs);
+			let inserted = 0, skipped = 0;
+			if (data) {
+				for (let i = 0; i < data.ticks.length; i++) {
+					const timestamp = new Date(data.ticks[i]);
+					try {
+						await this.prisma.candle.upsert({
+							where: { instrument_resolution_timestamp: { instrument: dto.instrument, resolution: dto.resolution, timestamp } },
+							update: {},
+							create: { instrument: dto.instrument, resolution: dto.resolution, timestamp, open: data.open[i], high: data.high[i], low: data.low[i], close: data.close[i], volume: 0 },
+						});
+						inserted++;
+					} catch { skipped++; }
+				}
+			}
+			this.logger.log(`Backfill complete: ${dto.instrument}@${dto.resolution} — ${inserted} inserted, ${skipped} skipped`);
+			return { instrument: dto.instrument, resolution: dto.resolution, inserted, skipped, fromTs, toTs };
+		}
+
+		// DVOL and TradingView: chunked fetch
+		const maxRange = MAX_RANGE_MS[dto.resolution] ?? 60 * 86_400_000;
+		const isDvol = DVOL_INSTRUMENTS.has(dto.instrument);
+		let inserted = 0, skipped = 0, cursor = fromTs;
 
 		while (cursor < toTs) {
 			const chunkEnd = Math.min(cursor + maxRange, toTs);
 
-			const data = await this.fetchChartData(
-				dto.instrument,
-				dto.resolution,
-				cursor,
-				chunkEnd,
-			);
+			const data = isDvol
+				? await this.fetchDvolChunk(dto.instrument, dto.resolution, cursor, chunkEnd)
+				: await this.fetchChartData(dto.instrument, dto.resolution, cursor, chunkEnd);
 
-			if (!data || !data.ticks.length) {
-				cursor = chunkEnd;
-				continue;
-			}
-
-			const { ticks, open, high, low, close, volume } = data;
-
-			for (let i = 0; i < ticks.length; i++) {
-				const timestamp = new Date(ticks[i]);
-				try {
-					await this.prisma.candle.upsert({
-						where: {
-							instrument_resolution_timestamp: {
-								instrument: dto.instrument,
-								resolution: dto.resolution,
-								timestamp,
-							},
-						},
-						update: {},
-						create: {
-							instrument: dto.instrument,
-							resolution: dto.resolution,
-							timestamp,
-							open: open[i],
-							high: high[i],
-							low: low[i],
-							close: close[i],
-							volume: volume?.[i] ?? 0,
-						},
-					});
-					inserted++;
-				} catch {
-					skipped++;
+			if (data?.ticks?.length) {
+				const { ticks, open, high, low, close, volume } = data;
+				for (let i = 0; i < ticks.length; i++) {
+					const timestamp = new Date(ticks[i]);
+					try {
+						await this.prisma.candle.upsert({
+							where: { instrument_resolution_timestamp: { instrument: dto.instrument, resolution: dto.resolution, timestamp } },
+							update: {},
+							create: { instrument: dto.instrument, resolution: dto.resolution, timestamp, open: open[i], high: high[i], low: low[i], close: close[i], volume: volume?.[i] ?? 0 },
+						});
+						inserted++;
+					} catch { skipped++; }
 				}
-			}
-
-			this.logger.debug(
-				`Candle chunk [${dto.instrument} ${dto.resolution}] ` +
+				this.logger.debug(
+					`Candle chunk [${dto.instrument} ${dto.resolution}] ` +
 					`${new Date(cursor).toISOString().slice(0, 10)} → ${new Date(chunkEnd).toISOString().slice(0, 10)}: ` +
-					`+${ticks.length} rows`,
-			);
+					`+${data.ticks.length} rows`,
+				);
+			}
 
 			cursor = chunkEnd;
 		}
 
-		this.logger.log(
-			`Backfill complete: ${dto.instrument}@${dto.resolution} — ${inserted} inserted, ${skipped} skipped`,
-		);
-		return {
-			instrument: dto.instrument,
-			resolution: dto.resolution,
-			inserted,
-			skipped,
-			fromTs,
-			toTs,
-		};
+		this.logger.log(`Backfill complete: ${dto.instrument}@${dto.resolution} — ${inserted} inserted, ${skipped} skipped`);
+		return { instrument: dto.instrument, resolution: dto.resolution, inserted, skipped, fromTs, toTs };
 	}
 
 	/**
@@ -500,6 +495,92 @@ export class DataIngestionService implements OnModuleInit {
 			);
 			return null;
 		}
+	}
+
+	private async fetchDvolChunk(
+		instrument: string,
+		resolution: string,
+		startTs: number,
+		endTs: number,
+	): Promise<{ ticks: number[]; open: number[]; high: number[]; low: number[]; close: number[]; volume: number[] } | null> {
+		const currency = instrument.startsWith('btc') ? 'BTC' : 'ETH';
+		const dvolRes = DVOL_RES[resolution] ?? '86400';
+
+		const url = new URL(`${DERIBIT_PUBLIC_REST}/get_volatility_index_data`);
+		url.searchParams.set('currency', currency);
+		url.searchParams.set('start_timestamp', String(startTs));
+		url.searchParams.set('end_timestamp', String(endTs));
+		url.searchParams.set('resolution', dvolRes);
+
+		try {
+			const res = await fetch(url.toString(), { signal: AbortSignal.timeout(30_000) });
+			if (!res.ok) return null;
+			const json = (await res.json()) as any;
+			if (!json.result?.data?.length) return null;
+			const rows: [number, number, number, number, number][] = json.result.data;
+			return {
+				ticks: rows.map((r) => r[0]),
+				open: rows.map((r) => r[1]),
+				high: rows.map((r) => r[2]),
+				low: rows.map((r) => r[3]),
+				close: rows.map((r) => r[4]),
+				volume: rows.map(() => 0),
+			};
+		} catch (err) {
+			this.logger.warn(`fetchDvolChunk failed for ${instrument}@${resolution}: ${err.message}`);
+			return null;
+		}
+	}
+
+	private async fetchDeliveryPrices(
+		instrument: string,
+		fromTs: number,
+		toTs: number,
+	): Promise<{ ticks: number[]; open: number[]; high: number[]; low: number[]; close: number[]; volume: number[] } | null> {
+		const allRows: { date: string; delivery_price: number }[] = [];
+		let offset = 0;
+		const PAGE = 10;
+
+		while (true) {
+			const url = new URL(`${DERIBIT_PUBLIC_REST}/get_delivery_prices`);
+			url.searchParams.set('index_name', instrument);
+			url.searchParams.set('offset', String(offset));
+			url.searchParams.set('count', String(PAGE));
+
+			try {
+				const res = await fetch(url.toString(), { signal: AbortSignal.timeout(30_000) });
+				if (!res.ok) break;
+				const json = (await res.json()) as any;
+				if (!json.result?.data?.length) break;
+
+				const page: { date: string; delivery_price: number }[] = json.result.data;
+				allRows.push(...page);
+
+				const oldest = new Date(page[page.length - 1].date + 'T08:00:00Z').getTime();
+				if (oldest <= fromTs || page.length < PAGE) break;
+
+				offset += PAGE;
+				await new Promise((r) => setTimeout(r, 150));
+			} catch (err) {
+				this.logger.warn(`fetchDeliveryPrices page failed for ${instrument}: ${err.message}`);
+				break;
+			}
+		}
+
+		if (!allRows.length) return null;
+
+		const inRange = allRows
+			.filter((r) => {
+				const ts = new Date(r.date + 'T08:00:00Z').getTime();
+				return ts >= fromTs && ts <= toTs;
+			})
+			.reverse();
+
+		if (!inRange.length) return null;
+
+		const ticks = inRange.map((r) => new Date(r.date + 'T08:00:00Z').getTime());
+		const price = inRange.map((r) => r.delivery_price);
+		return { ticks, open: price, high: price, low: price, close: price, volume: price.map(() => 0) };
 	}
 
 	/** Fetch a single option ticker from Deribit's public REST API. */
