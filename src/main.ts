@@ -65,9 +65,10 @@ async function bootstrap() {
     .addTag('Authentication', 'API key management and verification')
     .addTag('Deribit Account', 'Deribit credential management')
     .addTag('Account', 'Deribit account data')
-    .addTag('Market', 'Deribit market data')
-    .addTag('Wallet', 'Deribit wallet operations')
     .addTag('Trading', 'Deribit trading operations')
+    .addTag('data', 'Historical data ingestion and management')
+    .addTag('training', 'ML model training sessions')
+    .addTag('agent', 'Live and paper trading agent runs')
     .addTag('Health', 'System health monitoring')
     .addTag('Root', 'Base API endpoints')
     .build();
@@ -78,7 +79,7 @@ async function bootstrap() {
     customCss: '.swagger-ui .topbar { display: none }',
     swaggerOptions: {
       persistAuthorization: true,
-      docExpansion: 'list',
+      docExpansion: 'none',
       filter: true,
       showRequestDuration: true,
     },
