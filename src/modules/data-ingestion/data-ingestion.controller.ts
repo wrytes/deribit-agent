@@ -9,7 +9,7 @@ import {
 import { ApiKeyGuard } from '../../common/guards/api-key.guard';
 import { RequireScopes } from '../../common/decorators/require-scopes.decorator';
 import { ApiKeyScope } from '@prisma/client';
-import { DataIngestionService, BackfillDto } from './data-ingestion.service';
+import { DataIngestionService, BackfillDto, TRACKED_INSTRUMENTS } from './data-ingestion.service';
 import { ApiOperation, ApiTags, ApiSecurity } from '@nestjs/swagger';
 
 @ApiTags('data')
@@ -22,6 +22,17 @@ export class DataIngestionController {
   // ---------------------------------------------------------------------------
   // Candles
   // ---------------------------------------------------------------------------
+
+  @Get('status')
+  @RequireScopes(ApiKeyScope.DATA_READ)
+  @ApiOperation({ summary: 'Tracked instruments and current coverage stats' })
+  async getStatus() {
+    const [candleStats, optionStats] = await Promise.all([
+      this.dataIngestionService.getCandleStats(),
+      this.dataIngestionService.getOptionSnapshotStats(),
+    ]);
+    return { tracked: TRACKED_INSTRUMENTS, candles: candleStats, options: optionStats };
+  }
 
   @Get('candles/stats')
   @RequireScopes(ApiKeyScope.DATA_READ)

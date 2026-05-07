@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../../core/database/prisma.service';
 import { createDeribitClientPublic, DeribitApiClient } from '@wrytlabs/deribit-api-client';
 
@@ -24,25 +24,42 @@ export interface OptionSnapshotResult {
   errors: number;
 }
 
-/** Deribit chart data max range per resolution (ms) to stay within API limits. */
+// ---------------------------------------------------------------------------
+// Default tracking config
+// ---------------------------------------------------------------------------
+
+/** Instruments and resolutions auto-backfilled on startup and kept live hourly. */
+export const TRACKED_INSTRUMENTS: { instrument: string; resolution: string }[] = [
+  { instrument: 'BTC-PERPETUAL', resolution: '60' },
+  { instrument: 'BTC-PERPETUAL', resolution: '1D' },
+  { instrument: 'ETH-PERPETUAL', resolution: '60' },
+  { instrument: 'ETH-PERPETUAL', resolution: '1D' },
+];
+
+/** How far back to go on first-time backfill. */
+const INITIAL_LOOKBACK_DAYS = 365;
+
+/** Max candle range per resolution to stay within Deribit API limits. */
 const MAX_RANGE_MS: Record<string, number> = {
-  '1':    7  * 24 * 3600 * 1000,
-  '3':    7  * 24 * 3600 * 1000,
-  '5':    14 * 24 * 3600 * 1000,
-  '10':   14 * 24 * 3600 * 1000,
-  '15':   30 * 24 * 3600 * 1000,
-  '30':   30 * 24 * 3600 * 1000,
-  '60':   60 * 24 * 3600 * 1000,
-  '120':  90 * 24 * 3600 * 1000,
-  '180':  90 * 24 * 3600 * 1000,
-  '360': 180 * 24 * 3600 * 1000,
-  '720': 365 * 24 * 3600 * 1000,
-  '1D':  730 * 24 * 3600 * 1000,
-  '1W': 1825 * 24 * 3600 * 1000,
+  '1':   7   * 86_400_000,
+  '3':   7   * 86_400_000,
+  '5':   14  * 86_400_000,
+  '10':  14  * 86_400_000,
+  '15':  30  * 86_400_000,
+  '30':  30  * 86_400_000,
+  '60':  60  * 86_400_000,
+  '120': 90  * 86_400_000,
+  '180': 90  * 86_400_000,
+  '360': 180 * 86_400_000,
+  '720': 365 * 86_400_000,
+  '1D':  730 * 86_400_000,
+  '1W': 1825 * 86_400_000,
 };
 
+const DERIBIT_PUBLIC_REST = 'https://www.deribit.com/api/v2/public';
+
 @Injectable()
-export class DataIngestionService {
+export class DataIngestionService implements OnModuleInit {
   private readonly logger = new Logger(DataIngestionService.name);
   private client: DeribitApiClient;
 
@@ -51,19 +68,41 @@ export class DataIngestionService {
   }
 
   // ---------------------------------------------------------------------------
-  // Candle ingestion
+  // Lifecycle: auto-backfill on startup
+  // ---------------------------------------------------------------------------
+
+  async onModuleInit() {
+    // Fire-and-forget — don't block application startup
+    this.runInitialBackfillIfNeeded().catch((err) =>
+      this.logger.error(`Initial backfill error: ${err.message}`),
+    );
+  }
+
+  private async runInitialBackfillIfNeeded() {
+    for (const { instrument, resolution } of TRACKED_INSTRUMENTS) {
+      const count = await this.prisma.candle.count({ where: { instrument, resolution } });
+      if (count === 0) {
+        const from = new Date(Date.now() - INITIAL_LOOKBACK_DAYS * 86_400_000);
+        this.logger.log(`No candles for ${instrument}@${resolution} — backfilling ${INITIAL_LOOKBACK_DAYS}d`);
+        const result = await this.backfillCandles({ instrument, resolution, from });
+        this.logger.log(`Initial backfill done: ${instrument}@${resolution} → ${result.inserted} candles`);
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Candle ingestion (uses Deribit public REST, not WebSocket client)
   // ---------------------------------------------------------------------------
 
   /**
    * Backfill OHLCV candles for a given instrument and resolution.
-   * Automatically chunks the request to stay within Deribit's API range limits.
-   * Skips candles already present in the DB (upsert semantics via unique index).
+   * Chunks the time range to stay within API limits.
+   * Already-present rows are skipped via upsert (unique index on instrument+resolution+timestamp).
    */
   async backfillCandles(dto: BackfillDto): Promise<BackfillResult> {
-    const toDate = dto.to ?? new Date();
-    const fromTs = dto.from.getTime();
-    const toTs   = toDate.getTime();
-    const maxRange = MAX_RANGE_MS[dto.resolution] ?? 60 * 24 * 3600 * 1000;
+    const toTs    = (dto.to ?? new Date()).getTime();
+    const fromTs  = dto.from.getTime();
+    const maxRange = MAX_RANGE_MS[dto.resolution] ?? 60 * 86_400_000;
 
     let inserted = 0;
     let skipped  = 0;
@@ -72,31 +111,21 @@ export class DataIngestionService {
     while (cursor < toTs) {
       const chunkEnd = Math.min(cursor + maxRange, toTs);
 
-      const res = await (this.client as any).market.getTradingviewChartData({
-        instrument_name: dto.instrument,
-        start_timestamp: cursor,
-        end_timestamp:   chunkEnd,
-        resolution:      dto.resolution,
-      });
+      const data = await this.fetchChartData(dto.instrument, dto.resolution, cursor, chunkEnd);
 
-      if (!('result' in res) || !res.result?.ticks?.length) {
+      if (!data || !data.ticks.length) {
         cursor = chunkEnd;
         continue;
       }
 
-      const { ticks, open, high, low, close, volume } = res.result;
+      const { ticks, open, high, low, close, volume } = data;
 
       for (let i = 0; i < ticks.length; i++) {
         const timestamp = new Date(ticks[i]);
-
         try {
           await this.prisma.candle.upsert({
             where: {
-              instrument_resolution_timestamp: {
-                instrument:  dto.instrument,
-                resolution:  dto.resolution,
-                timestamp,
-              },
+              instrument_resolution_timestamp: { instrument: dto.instrument, resolution: dto.resolution, timestamp },
             },
             update: {},
             create: {
@@ -116,21 +145,22 @@ export class DataIngestionService {
         }
       }
 
-      this.logger.log(
+      this.logger.debug(
         `Candle chunk [${dto.instrument} ${dto.resolution}] ` +
-        `${new Date(cursor).toISOString()} → ${new Date(chunkEnd).toISOString()}: ` +
-        `+${inserted} inserted`,
+        `${new Date(cursor).toISOString().slice(0, 10)} → ${new Date(chunkEnd).toISOString().slice(0, 10)}: ` +
+        `+${ticks.length} rows`,
       );
 
       cursor = chunkEnd;
     }
 
+    this.logger.log(`Backfill complete: ${dto.instrument}@${dto.resolution} — ${inserted} inserted, ${skipped} skipped`);
     return { instrument: dto.instrument, resolution: dto.resolution, inserted, skipped, fromTs, toTs };
   }
 
   /**
-   * Fetch the latest candle batch for an instrument and append any new ones.
-   * Used by the scheduler to keep data current.
+   * Append candles since the last stored timestamp.
+   * Called by the scheduler every hour for each tracked instrument.
    */
   async ingestLatestCandles(instrument: string, resolution: string): Promise<number> {
     const latest = await this.prisma.candle.findFirst({
@@ -140,10 +170,20 @@ export class DataIngestionService {
 
     const from = latest
       ? new Date(latest.timestamp.getTime() + 1)
-      : new Date(Date.now() - 30 * 24 * 3600 * 1000); // 30 days default lookback
+      : new Date(Date.now() - 30 * 86_400_000);
 
     const result = await this.backfillCandles({ instrument, resolution, from });
     return result.inserted;
+  }
+
+  /** Ingest latest candles for all tracked instruments. Called by the scheduler. */
+  async ingestAllTracked(): Promise<{ instrument: string; resolution: string; inserted: number }[]> {
+    const results: { instrument: string; resolution: string; inserted: number }[] = [];
+    for (const { instrument, resolution } of TRACKED_INSTRUMENTS) {
+      const inserted = await this.ingestLatestCandles(instrument, resolution);
+      results.push({ instrument, resolution, inserted });
+    }
+    return results;
   }
 
   /** Query stored candles with optional time range. */
@@ -152,28 +192,22 @@ export class DataIngestionService {
     resolution: string,
     from?: Date,
     to?: Date,
-    limit?: number,
+    limit = 1000,
   ) {
     return this.prisma.candle.findMany({
       where: {
         instrument,
         resolution,
-        ...(from || to
-          ? {
-              timestamp: {
-                ...(from ? { gte: from } : {}),
-                ...(to   ? { lte: to   } : {}),
-              },
-            }
-          : {}),
+        ...(from || to ? { timestamp: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } } : {}),
       },
       orderBy: { timestamp: 'asc' },
-      ...(limit ? { take: limit } : {}),
+      take: limit,
     });
   }
 
   // ---------------------------------------------------------------------------
-  // Options chain snapshot
+  // Options chain snapshot (uses deribit-api-client WebSocket for instrument list,
+  // then direct REST for per-instrument tickers)
   // ---------------------------------------------------------------------------
 
   /**
@@ -191,35 +225,30 @@ export class DataIngestionService {
       return { currency, captured: 0, errors: 1 };
     }
 
-    const activeInstruments = instrumentsRes.result
-      .filter((i: any) => i.is_active)
-      .map((i: any) => i.instrument_name as string);
+    const activeInstruments = (instrumentsRes.result as any[])
+      .filter((i) => i.is_active)
+      .map((i) => i.instrument_name as string);
 
     const capturedAt = new Date();
     let captured = 0;
     let errors   = 0;
 
-    // Fetch in batches of 20 to avoid hammering the API
+    // Fetch tickers in batches via REST to avoid hammering the API
     const BATCH = 20;
     for (let i = 0; i < activeInstruments.length; i += BATCH) {
       const batch = activeInstruments.slice(i, i + BATCH);
 
-      const results = await Promise.allSettled(
-        batch.map((name) =>
-          (this.client.market as any).getTicker({ instrument_name: name }),
-        ),
+      const tickers = await Promise.allSettled(
+        batch.map((name) => this.fetchTicker(name)),
       );
 
-      for (let j = 0; j < results.length; j++) {
-        const res = results[j];
+      for (let j = 0; j < tickers.length; j++) {
+        const res = tickers[j];
         const name = batch[j];
 
-        if (res.status !== 'fulfilled' || !('result' in res.value)) {
-          errors++;
-          continue;
-        }
+        if (res.status !== 'fulfilled' || !res.value) { errors++; continue; }
 
-        const t = res.value.result as any;
+        const t = res.value;
         const parts = name.split('-'); // BTC-28MAR25-70000-C
         if (parts.length < 4) { errors++; continue; }
 
@@ -236,20 +265,20 @@ export class DataIngestionService {
               expiry,
               strike,
               optionType,
-              markIv:          t.mark_iv    ?? undefined,
-              bidIv:           t.bid_iv     ?? undefined,
-              askIv:           t.ask_iv     ?? undefined,
-              markPrice:       t.mark_price ?? undefined,
-              bidPrice:        t.best_bid_price  ?? undefined,
-              askPrice:        t.best_ask_price  ?? undefined,
+              markIv:          t.mark_iv          ?? undefined,
+              bidIv:           t.bid_iv           ?? undefined,
+              askIv:           t.ask_iv           ?? undefined,
+              markPrice:       t.mark_price       ?? undefined,
+              bidPrice:        t.best_bid_price   ?? undefined,
+              askPrice:        t.best_ask_price   ?? undefined,
               underlyingPrice: t.underlying_price ?? undefined,
-              delta:           t.greeks?.delta   ?? undefined,
-              gamma:           t.greeks?.gamma   ?? undefined,
-              theta:           t.greeks?.theta   ?? undefined,
-              vega:            t.greeks?.vega    ?? undefined,
-              rho:             t.greeks?.rho     ?? undefined,
-              openInterest:    t.open_interest   ?? undefined,
-              volume24h:       t.stats?.volume   ?? undefined,
+              delta:           t.greeks?.delta    ?? undefined,
+              gamma:           t.greeks?.gamma    ?? undefined,
+              theta:           t.greeks?.theta    ?? undefined,
+              vega:            t.greeks?.vega     ?? undefined,
+              rho:             t.greeks?.rho      ?? undefined,
+              openInterest:    t.open_interest    ?? undefined,
+              volume24h:       t.stats?.volume    ?? undefined,
             },
           });
           captured++;
@@ -264,29 +293,22 @@ export class DataIngestionService {
     return { currency, captured, errors };
   }
 
-  /** Query option snapshots for a specific expiry and capture time window. */
+  /** Query stored option snapshots. */
   async queryOptionSnapshots(
     currency: string,
     expiry?: string,
     from?: Date,
     to?: Date,
-    limit?: number,
+    limit = 500,
   ) {
     return this.prisma.optionSnapshot.findMany({
       where: {
         currency,
         ...(expiry ? { expiry } : {}),
-        ...(from || to
-          ? {
-              capturedAt: {
-                ...(from ? { gte: from } : {}),
-                ...(to   ? { lte: to   } : {}),
-              },
-            }
-          : {}),
+        ...(from || to ? { capturedAt: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } } : {}),
       },
       orderBy: [{ expiry: 'asc' }, { strike: 'asc' }, { capturedAt: 'desc' }],
-      ...(limit ? { take: limit } : {}),
+      take: limit,
     });
   }
 
@@ -299,7 +321,7 @@ export class DataIngestionService {
       { instrument: string; resolution: string; count: bigint; min_ts: Date; max_ts: Date }[]
     >`
       SELECT instrument, resolution,
-             COUNT(*)    AS count,
+             COUNT(*)       AS count,
              MIN(timestamp) AS min_ts,
              MAX(timestamp) AS max_ts
       FROM "Candle"
@@ -320,7 +342,7 @@ export class DataIngestionService {
       { currency: string; count: bigint; min_ts: Date; max_ts: Date }[]
     >`
       SELECT currency,
-             COUNT(*) AS count,
+             COUNT(*)          AS count,
              MIN("capturedAt") AS min_ts,
              MAX("capturedAt") AS max_ts
       FROM "OptionSnapshot"
@@ -332,5 +354,61 @@ export class DataIngestionService {
       from: r.min_ts,
       to:   r.max_ts,
     }));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Private: direct REST helpers
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Fetch OHLCV chart data from Deribit's public REST API.
+   * The WebSocket client does not expose this endpoint, so we use fetch directly.
+   */
+  private async fetchChartData(
+    instrument: string,
+    resolution: string,
+    startTs: number,
+    endTs: number,
+  ): Promise<{
+    ticks: number[];
+    open: number[];
+    high: number[];
+    low: number[];
+    close: number[];
+    volume?: number[];
+  } | null> {
+    const url = new URL(`${DERIBIT_PUBLIC_REST}/get_tradingview_chart_data`);
+    url.searchParams.set('instrument_name', instrument);
+    url.searchParams.set('start_timestamp', String(startTs));
+    url.searchParams.set('end_timestamp', String(endTs));
+    url.searchParams.set('resolution', resolution);
+
+    try {
+      const res = await fetch(url.toString(), {
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (!res.ok) return null;
+      const json = await res.json() as any;
+      if (!json.result?.ticks?.length) return null;
+      return json.result;
+    } catch (err) {
+      this.logger.warn(`fetchChartData failed for ${instrument}@${resolution}: ${err.message}`);
+      return null;
+    }
+  }
+
+  /** Fetch a single option ticker from Deribit's public REST API. */
+  private async fetchTicker(instrumentName: string): Promise<any | null> {
+    const url = new URL(`${DERIBIT_PUBLIC_REST}/get_ticker`);
+    url.searchParams.set('instrument_name', instrumentName);
+
+    try {
+      const res = await fetch(url.toString(), { signal: AbortSignal.timeout(10_000) });
+      if (!res.ok) return null;
+      const json = await res.json() as any;
+      return json.result ?? null;
+    } catch {
+      return null;
+    }
   }
 }

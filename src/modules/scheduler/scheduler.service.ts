@@ -4,6 +4,7 @@ import { PrismaService } from '../../core/database/prisma.service';
 import { DeribitClientService } from '../../integrations/deribit/deribit.client.service';
 import { MarketDataService } from '../market-data/market-data.service';
 import { TelegramService } from '../../integrations/telegram/telegram.service';
+import { DataIngestionService } from '../data-ingestion/data-ingestion.service';
 import { StrategyStatus } from '@prisma/client';
 
 @Injectable()
@@ -15,16 +16,27 @@ export class SchedulerService {
     private readonly deribitClientService: DeribitClientService,
     private readonly marketDataService: MarketDataService,
     private readonly telegramService: TelegramService,
+    private readonly dataIngestionService: DataIngestionService,
   ) {}
 
   // ---------------------------------------------------------------------------
-  // Hourly: market snapshots + strategy greeks snapshots
+  // Every hour: candle pipeline + market snapshots + strategy greeks
   // ---------------------------------------------------------------------------
 
   @Cron(CronExpression.EVERY_HOUR)
-  async takeHourlySnapshots() {
-    this.logger.log('Hourly snapshot run started');
+  async runHourly() {
+    this.logger.log('Hourly run started');
 
+    // 1. Ingest latest candles for all tracked instruments
+    try {
+      const results = await this.dataIngestionService.ingestAllTracked();
+      const total = results.reduce((s, r) => s + r.inserted, 0);
+      this.logger.log(`Candle ingestion: ${total} new rows across ${results.length} series`);
+    } catch (err) {
+      this.logger.error(`Candle ingestion failed: ${err.message}`);
+    }
+
+    // 2. Save market snapshots (IV rank, DVOL, RV)
     try {
       const conditions = await this.marketDataService.getAllConditions();
       for (const c of conditions) {
@@ -34,12 +46,10 @@ export class SchedulerService {
       this.logger.error(`Market snapshot failed: ${err.message}`);
     }
 
+    // 3. Strategy greeks snapshots
     const activeStrategies = await this.prisma.strategy.findMany({
       where: { status: StrategyStatus.ACTIVE },
-      include: {
-        user: true,
-        legs: { where: { isOpen: true } },
-      },
+      include: { user: true, legs: { where: { isOpen: true } } },
     });
 
     for (const strategy of activeStrategies) {
@@ -51,6 +61,24 @@ export class SchedulerService {
     }
 
     this.logger.log(`Hourly run done — ${activeStrategies.length} strategy snapshot(s)`);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Every 6 hours: options chain snapshot (IV surface)
+  // ---------------------------------------------------------------------------
+
+  @Cron('0 */6 * * *')
+  async snapshotOptionChains() {
+    this.logger.log('Options chain snapshot started');
+
+    for (const currency of ['BTC', 'ETH'] as const) {
+      try {
+        const result = await this.dataIngestionService.snapshotOptionChain(currency);
+        this.logger.log(`Options snapshot [${currency}]: ${result.captured} rows`);
+      } catch (err) {
+        this.logger.error(`Options snapshot failed [${currency}]: ${err.message}`);
+      }
+    }
   }
 
   // ---------------------------------------------------------------------------
