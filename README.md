@@ -7,14 +7,14 @@ Handles historical data ingestion, model training orchestration, and live/paper 
 
 ## Stack
 
-| Layer | Tech |
-|---|---|
-| API | NestJS 11, TypeScript |
-| Database | PostgreSQL + Prisma ORM |
-| Queue | BullMQ (Redis) |
-| Scheduler | `@nestjs/schedule` (cron) |
-| Notifications | Telegram bot (optional) |
-| ML runtime | Python FastAPI sidecar (separate process) |
+| Layer          | Tech                                        |
+| -------------- | ------------------------------------------- |
+| API            | NestJS 11, TypeScript                       |
+| Database       | PostgreSQL + Prisma ORM                     |
+| Queue          | BullMQ (Redis)                              |
+| Scheduler      | `@nestjs/schedule` (cron)                   |
+| Notifications  | Telegram bot (optional)                     |
+| ML runtime     | Python FastAPI sidecar (separate process)   |
 | Deribit client | `@wrytes/deribit-api-client` (local linked) |
 
 ---
@@ -26,6 +26,8 @@ Handles historical data ingestion, model training orchestration, and live/paper 
 yarn install
 
 # 2. Start Postgres + Redis
+docker stack deploy -c stack.testing.yml deribit-agent
+or
 docker compose -f stack.testing.yml up -d
 
 # 3. Copy env
@@ -40,7 +42,7 @@ yarn prisma:generate
 yarn start:dev
 ```
 
-Swagger UI available at `http://localhost:3031/api`.
+Swagger UI available at `http://localhost:3030/api`.
 
 ---
 
@@ -112,14 +114,14 @@ GET    /agent/runs/:id/actions
 
 ## API key scopes
 
-| Scope | Used for |
-|---|---|
-| `ACCOUNT_READ` | user info |
-| `MARKET_READ` | market data endpoints |
-| `DATA_READ/WRITE` | candle + options ingestion |
+| Scope                 | Used for                     |
+| --------------------- | ---------------------------- |
+| `ACCOUNT_READ`        | user info                    |
+| `MARKET_READ`         | market data endpoints        |
+| `DATA_READ/WRITE`     | candle + options ingestion   |
 | `TRAINING_READ/WRITE` | training sessions and models |
-| `AGENT_READ/WRITE` | agent runs and actions |
-| `ADMIN` | admin operations |
+| `AGENT_READ/WRITE`    | agent runs and actions       |
+| `ADMIN`               | admin operations             |
 
 ---
 
@@ -130,14 +132,14 @@ The sidecar should respond with:
 
 ```json
 {
-  "total_timesteps": 500000,
-  "final_reward": 1.23,
-  "model_path": "/models/ppo-btc-abc123.zip",
-  "mean_reward": 1.1,
-  "std_reward": 0.3,
-  "sharpe_ratio": 1.8,
-  "max_drawdown": 0.12,
-  "win_rate": 0.62
+	"total_timesteps": 500000,
+	"final_reward": 1.23,
+	"model_path": "/models/ppo-btc-abc123.zip",
+	"mean_reward": 1.1,
+	"std_reward": 0.3,
+	"sharpe_ratio": 1.8,
+	"max_drawdown": 0.12,
+	"win_rate": 0.62
 }
 ```
 
@@ -147,8 +149,8 @@ See `ml-intro/` for the reference Python implementation (PPO via Stable-Baseline
 
 ## Related repos
 
-| Repo | Purpose |
-|---|---|
-| `deribit-api-client` | TypeScript WebSocket client for Deribit |
-| `ml-intro` | Python RL training environment (PPO, Gymnasium) |
-| `wrytes-app` | Next.js frontend (planned) |
+| Repo                 | Purpose                                         |
+| -------------------- | ----------------------------------------------- |
+| `deribit-api-client` | TypeScript WebSocket client for Deribit         |
+| `ml-intro`           | Python RL training environment (PPO, Gymnasium) |
+| `wrytes-app`         | Next.js frontend (planned)                      |
