@@ -17,7 +17,7 @@ import psycopg2
 import psycopg2.extras
 from pathlib import Path
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.evaluation import evaluate_policy
 
@@ -30,6 +30,8 @@ logger = logging.getLogger(__name__)
 
 MODELS_DIR = Path(os.environ.get("MODELS_DIR", "/app/models"))
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
+
+N_ENVS = int(os.environ.get("N_ENVS", "4"))
 
 # ---------------------------------------------------------------------------
 # Defaults — overridden by session.hyperparams JSON
@@ -238,7 +240,10 @@ def train_session(session_id: str) -> dict:
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
     # --- PPO ---
-    vec_env = DummyVecEnv([lambda: OptionsEnv(train_data, env_cfg)])
+    def _make_env(data, cfg):
+        return lambda: OptionsEnv(data, cfg)
+
+    vec_env = SubprocVecEnv([_make_env(train_data, env_cfg) for _ in range(N_ENVS)])
 
     model = PPO(
         "MlpPolicy",
