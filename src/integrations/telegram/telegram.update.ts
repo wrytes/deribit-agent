@@ -7,8 +7,10 @@ import { DeribitClientService } from '../deribit/deribit.client.service';
 import { AiService } from '../ai/ai.service';
 import { MarketDataService, OptionChainSummary } from '../../modules/market-data/market-data.service';
 import { StrategyService, CreateStrategyDto } from '../../modules/strategy/strategy.service';
+import { StrategyExecutionService } from '../../modules/strategy/strategy-execution.service';
 import type { TelegramContext } from './session.types';
 import { ApiKeyScope, StrategyStatus, StrategyType } from '@prisma/client';
+import { ParsedStrategyParams } from '../ai/ai.service';
 import { Currency } from '@wrytlabs/deribit-api-client';
 
 function s(ctx: Context): TelegramContext {
@@ -30,6 +32,7 @@ export class TelegramUpdate implements OnModuleInit {
     private readonly aiService: AiService,
     private readonly marketDataService: MarketDataService,
     private readonly strategyService: StrategyService,
+    private readonly strategyExecutionService: StrategyExecutionService,
   ) {}
 
   async onModuleInit() {
@@ -48,7 +51,8 @@ export class TelegramUpdate implements OnModuleInit {
         { command: 'strategy_create',   description: 'Create a new trading strategy' },
         { command: 'strategies',        description: 'List all your strategies' },
         { command: 'strategy',          description: 'Detail view — /strategy <name>' },
-        { command: 'strategy_activate', description: 'Activate a DRAFT strategy' },
+        { command: 'strategy_activate', description: 'Activate a DRAFT strategy and place entry orders' },
+        { command: 'strategy_close',    description: 'Close a strategy and exit all positions' },
         { command: 'connect',         description: 'Link your Deribit credentials' },
         { command: 'api_create',      description: 'Generate a REST API key' },
         { command: 'api_list',        description: 'List your active API keys' },
@@ -85,7 +89,8 @@ export class TelegramUpdate implements OnModuleInit {
         '/suggest — best strategy for current conditions\n\n' +
         '🗂 *Strategies*\n' +
         '/strategy\\_create — create a new strategy\n' +
-        '/strategies — list all strategies\n\n' +
+        '/strategies — list all strategies\n' +
+        '/strategy\\_close — exit all positions and close\n\n' +
         '💼 *Portfolio*\n' +
         '/portfolio — AI portfolio summary\n' +
         '/balance — quick balances\n' +
@@ -488,30 +493,75 @@ export class TelegramUpdate implements OnModuleInit {
     const { id: userId } = await this.authService.getOrCreateUser(BigInt(from.id), from.username);
     const all = await this.strategyService.list(userId);
     const q = query.toLowerCase();
-    const strategy = all.find((s) => s.name.toLowerCase().includes(q) || s.id.startsWith(q));
+    const strategy = all.find((st) => st.name.toLowerCase().includes(q) || st.id.startsWith(q));
 
     if (!strategy) {
       await ctx.reply(`No strategy matching "${query}". Use /strategies to see all.`);
       return;
     }
 
-    await this.strategyService.activate(userId, strategy.id);
-    await ctx.reply(
-      `✅ *${strategy.name}* is now *ACTIVE*\n\nThe scheduler will check it every 15 minutes and take hourly snapshots.`,
-      { parse_mode: 'Markdown' },
-    );
+    await ctx.reply('🚀 Activating strategy and placing entry orders...');
+
+    try {
+      const result = await this.strategyExecutionService.enterStrategy(userId, strategy.id);
+      await this.safeReply(ctx, result.message);
+      if (result.legsPlaced > 0) {
+        await ctx.reply(`Use /strategy ${strategy.name} to see live greeks once the scheduler runs.`);
+      }
+    } catch (err) {
+      this.logger.error(`Strategy activation failed: ${err.message}`);
+      await ctx.reply(`❌ Error: ${err.message}`);
+    }
+  }
+
+  @Command('strategy_close')
+  async onStrategyClose(@Ctx() ctx: Context) {
+    const tc = s(ctx);
+    const from = tc.from;
+    const message = tc.message;
+    if (!from || !message || !('text' in message)) return;
+
+    const query = (message as any).text.replace(/^\/strategy_close\s*/i, '').trim();
+    if (!query) {
+      await ctx.reply('Usage: /strategy_close <name or ID prefix>');
+      return;
+    }
+
+    const { id: userId } = await this.authService.getOrCreateUser(BigInt(from.id), from.username);
+    const all = await this.strategyService.list(userId);
+    const q = query.toLowerCase();
+    const strategy = all.find((st) => st.name.toLowerCase().includes(q) || st.id.startsWith(q));
+
+    if (!strategy) {
+      await ctx.reply(`No strategy matching "${query}". Use /strategies to see all.`);
+      return;
+    }
+
+    await ctx.reply(`🔴 Closing *${strategy.name}* and exiting all positions...`, {
+      parse_mode: 'Markdown',
+    });
+
+    try {
+      const result = await this.strategyExecutionService.exitStrategy(userId, strategy.id, 'manual');
+      await this.safeReply(ctx, result.message);
+    } catch (err) {
+      this.logger.error(`Strategy close failed: ${err.message}`);
+      await ctx.reply(`❌ Error: ${err.message}`);
+    }
   }
 
   @Command('strategy_create')
   async onStrategyCreate(@Ctx() ctx: Context) {
     const tc = s(ctx);
-    const types = Object.values(StrategyType)
-      .map((t, i) => `${i + 1}. ${t.toLowerCase().replace(/_/g, ' ')}`)
-      .join('\n');
-
-    tc.session.pendingAction = { type: 'strategy_create', step: 'type' };
+    tc.session.pendingAction = { type: 'strategy_create', step: 'parse_input' };
     await ctx.reply(
-      `📝 *Create a Strategy*\n\nChoose a type:\n${types}\n\nReply with the number or name:`,
+      `📝 *Create a Strategy*\n\n` +
+      `Paste your strategy parameters or describe it — I'll parse everything at once.\n\n` +
+      `Example:\n` +
+      `\`\`\`\nType: DELTA_NEUTRAL\nAsset: BTC\nSize: 0.004 BTC\nStrike: 65000\nExpiry: 20MAR26\nRebalance: 500\nTarget: 30\nStop: 40\n\`\`\`\n\n` +
+      `Or just describe it naturally:\n` +
+      `_"delta neutral on BTC, 0.004 BTC, 65k strike, March 2026 expiry"_\n\n` +
+      `Reply \`step\` for the guided wizard instead.`,
       { parse_mode: 'Markdown' },
     );
   }
@@ -824,10 +874,138 @@ export class TelegramUpdate implements OnModuleInit {
   ) {
     const step = tc.session.pendingAction?.step;
     const data = tc.session.pendingAction?.data ?? {};
+
+    // ---- AI-powered parse flow ----
+
+    if (step === 'parse_input') {
+      if (text.toLowerCase().trim() === 'step') {
+        const types = Object.values(StrategyType);
+        const list = types.map((t, i) => `${i + 1}. ${t.toLowerCase().replace(/_/g, ' ')}`).join('\n');
+        tc.session.pendingAction = { type: 'strategy_create', step: 'type', data: {} };
+        await ctx.reply(
+          `📋 *Choose a strategy type:*\n\n${list}\n\nReply with a number or name:`,
+          { parse_mode: 'Markdown' },
+        );
+        return;
+      }
+
+      await ctx.reply('🤔 Parsing your strategy...');
+      const parsed = await this.aiService.parseStrategyParams(text);
+
+      if (parsed.missing.length > 0) {
+        tc.session.pendingAction = {
+          type: 'strategy_create',
+          step: 'collect_missing',
+          data: { parsed, originalText: text },
+        };
+        const preview = this.fmtParsed(parsed);
+        const missingList = parsed.missing.map((f) => `• ${f}`).join('\n');
+        await ctx.reply(
+          `*Parsed so far:*\n${preview}\n\n*Still need:*\n${missingList}\n\nAdd the missing details:`,
+          { parse_mode: 'Markdown' },
+        );
+        return;
+      }
+
+      tc.session.pendingAction = { type: 'strategy_create', step: 'confirm', data: { parsed } };
+      await this.showStrategyConfirm(ctx, parsed);
+      return;
+    }
+
+    if (step === 'collect_missing') {
+      const combined = `${data.originalText as string}\n${text}`;
+      await ctx.reply('🤔 Re-parsing...');
+      const parsed = await this.aiService.parseStrategyParams(combined);
+
+      if (parsed.missing.length > 0) {
+        tc.session.pendingAction = {
+          type: 'strategy_create',
+          step: 'collect_missing',
+          data: { parsed, originalText: combined },
+        };
+        const preview = this.fmtParsed(parsed);
+        const missingList = parsed.missing.map((f) => `• ${f}`).join('\n');
+        await ctx.reply(
+          `*Parsed so far:*\n${preview}\n\n*Still need:*\n${missingList}\n\nAdd the missing details:`,
+          { parse_mode: 'Markdown' },
+        );
+        return;
+      }
+
+      tc.session.pendingAction = { type: 'strategy_create', step: 'confirm', data: { parsed } };
+      await this.showStrategyConfirm(ctx, parsed);
+      return;
+    }
+
+    if (step === 'confirm') {
+      const parsed = data.parsed as ParsedStrategyParams;
+      const lower = text.toLowerCase().trim();
+
+      if (lower === 'yes' || lower === 'y') {
+        await this.saveStrategyFromParsed(ctx, tc, from, parsed);
+        return;
+      }
+
+      if (lower === 'no' || lower === 'cancel') {
+        tc.session.pendingAction = undefined;
+        await ctx.reply('❌ Cancelled. Use /strategy_create to start again.');
+        return;
+      }
+
+      if (lower.startsWith('edit ')) {
+        const rest = text.slice(5).trim();
+        const spaceIdx = rest.indexOf(' ');
+        if (spaceIdx === -1) {
+          await ctx.reply(
+            'Format: `edit <field> <value>`\nExample: `edit dte 30` · `edit name my-wheel` · `edit size 0.01`',
+            { parse_mode: 'Markdown' },
+          );
+          return;
+        }
+        const field = rest.slice(0, spaceIdx).toLowerCase();
+        const value = rest.slice(spaceIdx + 1).trim();
+        const updated = this.applyStrategyEdit(parsed, field, value);
+        if (updated === null) {
+          await ctx.reply(
+            `Unknown field: \`${field}\`\nEditable: type · name · asset · size · dte · expiry · strike · rebalance · ivr · target · stop`,
+            { parse_mode: 'Markdown' },
+          );
+          return;
+        }
+        tc.session.pendingAction = { type: 'strategy_create', step: 'confirm', data: { parsed: updated } };
+        await this.showStrategyConfirm(ctx, updated);
+        return;
+      }
+
+      // Anything else → treat as refinement
+      await ctx.reply('🤔 Updating with your input...');
+      const merged = await this.aiService.parseStrategyParams(
+        `Existing params: ${JSON.stringify(parsed)}\nUser refinement: ${text}`,
+      );
+      const final: ParsedStrategyParams = {
+        type: merged.type || parsed.type,
+        name: merged.name ?? parsed.name,
+        currency: merged.currency ?? parsed.currency,
+        allocationBtc: merged.allocationBtc ?? parsed.allocationBtc,
+        dte: merged.dte ?? parsed.dte,
+        expiry: merged.expiry ?? parsed.expiry,
+        strike: merged.strike ?? parsed.strike,
+        rebalanceTriggerUsd: merged.rebalanceTriggerUsd ?? parsed.rebalanceTriggerUsd,
+        ivrThreshold: merged.ivrThreshold ?? parsed.ivrThreshold,
+        takeProfitPct: merged.takeProfitPct ?? parsed.takeProfitPct,
+        stopLossPct: merged.stopLossPct ?? parsed.stopLossPct,
+        missing: [],
+      };
+      tc.session.pendingAction = { type: 'strategy_create', step: 'confirm', data: { parsed: final } };
+      await this.showStrategyConfirm(ctx, final);
+      return;
+    }
+
+    // ---- Guided wizard (reached via "step" keyword) ----
+
     const types = Object.values(StrategyType);
 
     if (step === 'type') {
-      // Accept number (1-8) or type name
       const idx = parseInt(text, 10);
       let chosen: StrategyType | undefined;
       if (!isNaN(idx) && idx >= 1 && idx <= types.length) {
@@ -837,12 +1015,10 @@ export class TelegramUpdate implements OnModuleInit {
           (t) => t.toLowerCase() === text.toUpperCase() || t.toLowerCase().replace(/_/g, ' ') === text.toLowerCase(),
         );
       }
-
       if (!chosen) {
         await ctx.reply('Unknown type. Reply with a number 1–8 or the strategy name.');
         return;
       }
-
       tc.session.pendingAction = { type: 'strategy_create', step: 'name', data: { type: chosen } };
       await ctx.reply(`*${chosen.toLowerCase().replace(/_/g, ' ')}* selected.\n\nGive this strategy a name:`, {
         parse_mode: 'Markdown',
@@ -862,7 +1038,6 @@ export class TelegramUpdate implements OnModuleInit {
         await ctx.reply('Invalid amount. Enter a positive number, e.g. `0.05`:', { parse_mode: 'Markdown' });
         return;
       }
-
       tc.session.pendingAction = {
         type: 'strategy_create',
         step: 'dte',
@@ -905,9 +1080,7 @@ export class TelegramUpdate implements OnModuleInit {
 
     if (step === 'ivr_threshold') {
       const { id: userId } = await this.authService.getOrCreateUser(BigInt(from.id), from.username);
-
       const ivrThreshold = text.toLowerCase() === 'skip' ? null : parseInt(text, 10);
-
       const params: Record<string, any> = {};
       if (data.dte !== null) params.dte = data.dte;
       if (data.rebalanceTriggerUsd !== null) params.rebalanceTriggerUsd = data.rebalanceTriggerUsd;
@@ -923,7 +1096,6 @@ export class TelegramUpdate implements OnModuleInit {
       const strategy = await this.strategyService.create(userId, dto);
       tc.session.pendingAction = undefined;
 
-      // Summary of what was saved
       const paramLines = [
         `Type: ${strategy.type.toLowerCase().replace(/_/g, ' ')}`,
         `Allocation: ${strategy.allocationBtc} BTC`,
@@ -937,7 +1109,6 @@ export class TelegramUpdate implements OnModuleInit {
         { parse_mode: 'Markdown' },
       );
 
-      // AI entry analysis
       try {
         const conditions = await this.marketDataService.getAllConditions();
         const suggestion = await this.aiService.suggestStrategies(conditions);
@@ -951,6 +1122,116 @@ export class TelegramUpdate implements OnModuleInit {
         { parse_mode: 'Markdown' },
       );
     }
+  }
+
+  /** Compact one-line-per-field preview of parsed strategy params. */
+  private fmtParsed(p: ParsedStrategyParams): string {
+    return [
+      `Type: \`${p.type.toLowerCase().replace(/_/g, ' ')}\``,
+      p.name              ? `Name: \`${p.name}\`` : null,
+      p.currency          ? `Asset: \`${p.currency}\`` : null,
+      p.allocationBtc     ? `Size: \`${p.allocationBtc} BTC\`` : null,
+      p.dte               ? `DTE: \`${p.dte}d\`` : null,
+      p.expiry            ? `Expiry: \`${p.expiry}\`` : null,
+      p.strike            ? `Strike: \`$${p.strike.toLocaleString()}\`` : null,
+      p.rebalanceTriggerUsd ? `Rebalance: \`$${p.rebalanceTriggerUsd}\`` : null,
+      p.ivrThreshold      ? `Min IV rank: \`${p.ivrThreshold}\`` : null,
+      p.takeProfitPct     ? `Take profit: \`${p.takeProfitPct}%\`` : null,
+      p.stopLossPct       ? `Stop loss: \`${p.stopLossPct}%\`` : null,
+    ].filter(Boolean).join('\n');
+  }
+
+  /** Show the confirmation message for the AI-parse flow. */
+  private async showStrategyConfirm(ctx: Context, parsed: ParsedStrategyParams): Promise<void> {
+    const summary = this.fmtParsed(parsed);
+    await ctx.reply(
+      `📋 *Confirm Strategy*\n\n${summary}\n\n` +
+      `Type *yes* to save · *no* to cancel · or *edit field value* to adjust.\n` +
+      `Example: \`edit dte 30\` · \`edit name my-wheel\` · \`edit size 0.01\``,
+      { parse_mode: 'Markdown' },
+    );
+  }
+
+  /** Apply a single `edit field value` mutation to parsed params. Returns null for unknown fields. */
+  private applyStrategyEdit(parsed: ParsedStrategyParams, field: string, value: string): ParsedStrategyParams | null {
+    const updated: ParsedStrategyParams = { ...parsed, missing: [] };
+    switch (field) {
+      case 'type':                  updated.type = value.toUpperCase(); break;
+      case 'name':                  updated.name = value; break;
+      case 'asset':
+      case 'currency':              updated.currency = value.toUpperCase(); break;
+      case 'size':
+      case 'allocation':
+      case 'allocationbtc':         updated.allocationBtc = parseFloat(value); break;
+      case 'dte':                   updated.dte = parseInt(value, 10); break;
+      case 'expiry':                updated.expiry = value; break;
+      case 'strike':                updated.strike = parseFloat(value); break;
+      case 'rebalance':
+      case 'rebalancetriggerusd':   updated.rebalanceTriggerUsd = parseFloat(value); break;
+      case 'ivr':
+      case 'ivrthreshold':          updated.ivrThreshold = parseFloat(value); break;
+      case 'target':
+      case 'takeprofitpct':         updated.takeProfitPct = parseFloat(value); break;
+      case 'stop':
+      case 'stoploss':
+      case 'stoplosspct':           updated.stopLossPct = parseFloat(value); break;
+      default:                      return null;
+    }
+    return updated;
+  }
+
+  /** Persist the strategy from AI-parsed params and send confirmation. */
+  private async saveStrategyFromParsed(
+    ctx: Context,
+    tc: TelegramContext,
+    from: NonNullable<TelegramContext['from']>,
+    parsed: ParsedStrategyParams,
+  ): Promise<void> {
+    if (!parsed.allocationBtc) {
+      await ctx.reply(
+        'Missing allocation size. Reply `edit size 0.01` to set it.',
+        { parse_mode: 'Markdown' },
+      );
+      return;
+    }
+
+    const { id: userId } = await this.authService.getOrCreateUser(BigInt(from!.id), from!.username);
+
+    const params: Record<string, any> = {};
+    if (parsed.dte)               params.dte               = parsed.dte;
+    if (parsed.expiry)            params.expiry            = parsed.expiry;
+    if (parsed.strike)            params.strike            = parsed.strike;
+    if (parsed.rebalanceTriggerUsd) params.rebalanceTriggerUsd = parsed.rebalanceTriggerUsd;
+    if (parsed.ivrThreshold)      params.ivrThreshold      = parsed.ivrThreshold;
+    if (parsed.takeProfitPct)     params.takeProfitPct     = parsed.takeProfitPct;
+    if (parsed.stopLossPct)       params.stopLossPct       = parsed.stopLossPct;
+
+    const dto: CreateStrategyDto = {
+      name: parsed.name ?? `${parsed.type.toLowerCase().replace(/_/g, '-')}-${Date.now().toString(36)}`,
+      type: parsed.type as StrategyType,
+      allocationBtc: parsed.allocationBtc,
+      params,
+    };
+
+    const strategy = await this.strategyService.create(userId, dto);
+    tc.session.pendingAction = undefined;
+
+    await ctx.reply(
+      `✅ *${strategy.name}* created in DRAFT mode\n\nID: \`${strategy.id}\`\n\nFetching market analysis...`,
+      { parse_mode: 'Markdown' },
+    );
+
+    try {
+      const conditions = await this.marketDataService.getAllConditions();
+      const suggestion = await this.aiService.suggestStrategies(conditions);
+      await this.safeReply(ctx, `💡 *Current market conditions*\n\n${suggestion}`);
+    } catch (err) {
+      this.logger.warn(`AI analysis failed: ${err.message}`);
+    }
+
+    await ctx.reply(
+      `Use /strategies to see all · /strategy_activate ${strategy.name} to go live`,
+    );
   }
 
   /**

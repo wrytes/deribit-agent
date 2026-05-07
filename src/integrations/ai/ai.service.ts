@@ -10,6 +10,21 @@ export interface ParsedTradingCommand {
   confidence: 'high' | 'low';
 }
 
+export interface ParsedStrategyParams {
+  type: string;            // WHEEL | COVERED_CALL | CASH_SECURED_PUT | IRON_CONDOR | STRANGLE | STRADDLE | DELTA_NEUTRAL | CUSTOM
+  name?: string;
+  currency?: string;       // BTC | ETH | USDC | USDT
+  allocationBtc?: number;
+  dte?: number;            // days to expiration
+  expiry?: string;         // specific expiry label e.g. "20MAR26"
+  strike?: number;         // primary strike price in USD
+  rebalanceTriggerUsd?: number;
+  ivrThreshold?: number;   // 0-100
+  takeProfitPct?: number;  // 0-100
+  stopLossPct?: number;    // 0-100
+  missing: string[];       // required fields that could not be parsed
+}
+
 @Injectable()
 export class AiService {
   private readonly logger = new Logger(AiService.name);
@@ -18,6 +33,84 @@ export class AiService {
   constructor(private readonly configService: ConfigService) {
     const apiKey = this.configService.get<string>('ai.anthropicApiKey');
     this.client = new Anthropic({ apiKey });
+  }
+
+  /**
+   * Parse free-form strategy description (or key:value block) into structured params.
+   * Returns parsed fields plus a `missing` list for required fields not found.
+   */
+  async parseStrategyParams(text: string): Promise<ParsedStrategyParams> {
+    const tool: Anthropic.Tool = {
+      name: 'create_strategy',
+      description: 'Extract strategy parameters from the user input',
+      input_schema: {
+        type: 'object' as const,
+        properties: {
+          type: {
+            type: 'string',
+            enum: ['WHEEL', 'COVERED_CALL', 'CASH_SECURED_PUT', 'IRON_CONDOR', 'STRANGLE', 'STRADDLE', 'DELTA_NEUTRAL', 'CUSTOM'],
+            description: 'Strategy type',
+          },
+          name: { type: 'string', description: 'Strategy name (infer a descriptive one if not given)' },
+          currency: { type: 'string', enum: ['BTC', 'ETH', 'USDC', 'USDT'], description: 'Base asset' },
+          allocationBtc: { type: 'number', description: 'Capital allocated in BTC (e.g. 0.004 BTC or convert from USD if BTC price given)' },
+          dte: { type: 'number', description: 'Target days to expiration' },
+          expiry: { type: 'string', description: 'Specific expiry label e.g. 20MAR26' },
+          strike: { type: 'number', description: 'Primary strike price in USD' },
+          rebalanceTriggerUsd: { type: 'number', description: 'USD BTC price move that triggers a rebalance' },
+          ivrThreshold: { type: 'number', description: 'Minimum IV rank (0-100) to enter the strategy' },
+          takeProfitPct: { type: 'number', description: 'Take profit target as % of max profit (0-100)' },
+          stopLossPct: { type: 'number', description: 'Stop loss as % of max loss (0-100)' },
+        },
+        required: ['type'],
+      },
+    };
+
+    try {
+      const response = await this.client.messages.create({
+        model: MODEL,
+        max_tokens: 512,
+        system:
+          'You are a Deribit strategy parameter extractor. Parse the user input and call create_strategy ' +
+          'with every field you can confidently extract. Infer a descriptive name if none given. ' +
+          'Convert size/capital to BTC if given in USD (use context clues). ' +
+          'Map "target" → takeProfitPct, "stop" → stopLossPct, "rebalance" → rebalanceTriggerUsd.',
+        messages: [{ role: 'user', content: text }],
+        tools: [tool],
+        tool_choice: { type: 'tool', name: 'create_strategy' },
+      });
+
+      const toolUse = response.content.find((c) => c.type === 'tool_use') as
+        | Anthropic.ToolUseBlock
+        | undefined;
+
+      if (!toolUse) return { type: 'CUSTOM', missing: ['type', 'allocationBtc'] };
+
+      const p = toolUse.input as Record<string, any>;
+
+      // Determine which required fields are still missing
+      const missing: string[] = [];
+      if (!p.type) missing.push('type');
+      if (!p.allocationBtc) missing.push('allocation (BTC amount)');
+
+      return {
+        type: p.type ?? 'CUSTOM',
+        name: p.name,
+        currency: p.currency,
+        allocationBtc: p.allocationBtc,
+        dte: p.dte,
+        expiry: p.expiry,
+        strike: p.strike,
+        rebalanceTriggerUsd: p.rebalanceTriggerUsd,
+        ivrThreshold: p.ivrThreshold,
+        takeProfitPct: p.takeProfitPct,
+        stopLossPct: p.stopLossPct,
+        missing,
+      };
+    } catch (err) {
+      this.logger.error(`Failed to parse strategy params: ${err.message}`);
+      return { type: 'CUSTOM', missing: ['type', 'allocationBtc'] };
+    }
   }
 
   /**
