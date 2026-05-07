@@ -185,6 +185,46 @@ export class TrainingService {
     });
   }
 
+  /** Called by the trainer sidecar via POST /training/sessions/:id/callback. */
+  async handleTrainerCallback(
+    id: string,
+    result?: {
+      total_timesteps?: number;
+      final_reward?: number;
+      model_path?: string;
+      model_name?: string;
+      size_bytes?: number;
+      mean_reward?: number;
+      std_reward?: number;
+      sharpe_ratio?: number;
+      max_drawdown?: number;
+      win_rate?: number;
+    },
+    error?: string,
+  ) {
+    if (error) {
+      return this.markFailed(id, error);
+    }
+
+    await this.markCompleted(id, result?.total_timesteps, result?.final_reward);
+
+    if (result?.model_path) {
+      await this.registerModel({
+        sessionId:   id,
+        name:        result.model_name ?? `model-${id.slice(0, 8)}`,
+        storagePath: result.model_path,
+        sizeBytes:   result.size_bytes,
+        meanReward:  result.mean_reward,
+        stdReward:   result.std_reward,
+        sharpeRatio: result.sharpe_ratio,
+        maxDrawdown: result.max_drawdown,
+        winRate:     result.win_rate,
+      });
+    }
+
+    return { ok: true };
+  }
+
   async listModels() {
     return this.prisma.trainedModel.findMany({
       include: { session: { select: { name: true, algorithm: true, currency: true } } },

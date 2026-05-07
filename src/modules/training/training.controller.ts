@@ -95,6 +95,42 @@ export class TrainingController {
     return this.trainingService.cancelSession(id);
   }
 
+  @Post('sessions/:id/callback')
+  @RequireScopes(ApiKeyScope.TRAINING_WRITE)
+  @ApiOperation({
+    summary: 'Trainer sidecar callback — marks session completed/failed and registers model',
+    description: 'Called by the Python trainer when training finishes. Requires TRAINING_WRITE scope.',
+  })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        result: {
+          type: 'object',
+          properties: {
+            total_timesteps: { type: 'number' },
+            final_reward:    { type: 'number' },
+            model_path:      { type: 'string' },
+            model_name:      { type: 'string' },
+            size_bytes:      { type: 'number' },
+            mean_reward:     { type: 'number' },
+            std_reward:      { type: 'number' },
+            sharpe_ratio:    { type: 'number' },
+            max_drawdown:    { type: 'number' },
+            win_rate:        { type: 'number' },
+          },
+        },
+        error: { type: 'string', description: 'Set when training failed' },
+      },
+    },
+  })
+  trainerCallback(
+    @Param('id') id: string,
+    @Body() body: { result?: Record<string, any>; error?: string },
+  ) {
+    return this.trainingService.handleTrainerCallback(id, body.result, body.error);
+  }
+
   // ---------------------------------------------------------------------------
   // Queue
   // ---------------------------------------------------------------------------

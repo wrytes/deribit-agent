@@ -5,4 +5,5 @@ docker run -p 8000:8000 \
     -e NESTJS_URL="http://host.docker.internal:3030" \
     -e NESTJS_API_KEY="$API_KEY" \
     -v $(pwd)/models:/app/models \
+    -t deribit-trainer
     deribit-trainer

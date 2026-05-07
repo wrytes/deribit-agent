@@ -2,18 +2,23 @@
 FastAPI training sidecar.
 
 NestJS TrainingProcessor calls:
-  POST /train   { "session_id": "<cuid>" }
+  POST /train   { "session_id": "<cuid>" }   → returns immediately; training runs in background
   POST /run     { "run_id": "<cuid>", "session_id": "<cuid>", "data_from"?, "data_to"? }
+
+When training finishes the sidecar POSTs results to:
+  POST {NESTJS_URL}/training/sessions/{session_id}/callback
 """
 
 import asyncio
+import json
 import logging
 import os
+import urllib.request
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException
 from pydantic import BaseModel
 
 from run_session import run_session
@@ -53,28 +58,42 @@ class TrainRequest(BaseModel):
     session_id: str
 
 
-@app.post("/train")
-async def train(req: TrainRequest):
-    """
-    Run a PPO training session.
-    Blocks until training completes (NestJS has a 1-hour timeout).
-    Long-running — do not set a short HTTP client timeout.
-    """
-    logger.info("Received train request for session %s", req.session_id)
-
+def _post_callback(session_id: str, result: dict | None, error: str | None) -> None:
+    nestjs_url = os.environ.get("NESTJS_URL", "http://localhost:3030")
+    api_key    = os.environ.get("NESTJS_API_KEY", "")
+    payload    = json.dumps({"result": result, "error": error}).encode()
     try:
-        # Run sync training in a thread so the event loop stays responsive
-        loop   = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, train_session, req.session_id)
-        logger.info("Training complete for session %s: %s", req.session_id, result)
-        return result
-    except ValueError as exc:
-        # Data / config errors — 422 so NestJS can distinguish from infra failures
-        logger.warning("Training config error for session %s: %s", req.session_id, exc)
-        raise HTTPException(status_code=422, detail=str(exc))
+        req = urllib.request.Request(
+            f"{nestjs_url}/training/sessions/{session_id}/callback",
+            data=payload,
+            headers={"Content-Type": "application/json", "x-api-key": api_key},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=30):
+            pass
+        logger.info("Callback sent for session %s (error=%s)", session_id, error)
     except Exception as exc:
-        logger.error("Training failed for session %s: %s", req.session_id, exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=str(exc))
+        logger.error("Callback to NestJS failed for session %s: %s", session_id, exc)
+
+
+def _run_and_callback(session_id: str) -> None:
+    try:
+        result = train_session(session_id)
+        _post_callback(session_id, result, None)
+    except Exception as exc:
+        logger.error("Training failed for session %s: %s", session_id, exc, exc_info=True)
+        _post_callback(session_id, None, str(exc))
+
+
+@app.post("/train")
+async def train(req: TrainRequest, background_tasks: BackgroundTasks):
+    """
+    Accept a training job and return immediately.
+    Training runs in the background; results are POSTed back to NestJS via callback.
+    """
+    logger.info("Accepted train request for session %s", req.session_id)
+    background_tasks.add_task(_run_and_callback, req.session_id)
+    return {"status": "started", "session_id": req.session_id}
 
 
 # ---------------------------------------------------------------------------
