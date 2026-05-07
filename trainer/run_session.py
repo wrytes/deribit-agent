@@ -67,22 +67,28 @@ def _instrument_label(current_date: datetime, dte: int, strike: float, opt_type:
     return f"BTC-{expiry}-{int(strike)}-{suffix}"
 
 
-def _flush_actions(nestjs_url: str, api_key: str, run_id: str, actions: list[dict]) -> None:
-    """POST all collected actions in one batch request."""
+def _flush_actions(nestjs_url: str, api_key: str, run_id: str, actions: list[dict], chunk_size: int = 200) -> None:
+    """POST actions in chunks to stay within the server body-size limit. Raises on any failure."""
     if not actions:
         return
-    try:
-        data = json.dumps({"actions": actions}).encode()
+    import urllib.error
+    for start in range(0, len(actions), chunk_size):
+        chunk = actions[start : start + chunk_size]
+        data = json.dumps({"actions": chunk}).encode()
         req = urllib.request.Request(
             f"{nestjs_url}/agent/runs/{run_id}/actions/batch",
             data=data,
             headers={"Content-Type": "application/json", "x-api-key": api_key},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=60):
-            pass
-    except Exception as exc:
-        logger.error("Failed to flush actions to NestJS: %s", exc)
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                logger.info("Flushed actions %d–%d → HTTP %s", start, start + len(chunk), resp.status)
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode(errors="replace")
+            raise RuntimeError(
+                f"Batch flush failed at chunk {start}–{start + len(chunk)}: HTTP {exc.code} — {body}"
+            ) from exc
 
 
 def run_session(
@@ -164,21 +170,26 @@ def run_session(
         steps        += 1
 
         if action_id != 0:
-            instrument      = None
             portfolio_delta = 0.0
             step_idx        = max(0, env.idx - 1)
             current_date    = datetime.combine(dates[step_idx].date(), datetime.min.time(), tzinfo=timezone.utc)
 
+            call_label, put_label = None, None
             if env.call_pos:
                 T             = env.call_pos["dte"] / 365.0
                 portfolio_delta += bs_delta(S, env.call_pos["strike"], T, env.r, sigma, "call")
-                instrument    = _instrument_label(current_date, env.call_pos["dte"], env.call_pos["strike"], "call")
+                call_label    = _instrument_label(current_date, env.call_pos["dte"], env.call_pos["strike"], "call")
 
             if env.put_pos:
                 T             = env.put_pos["dte"] / 365.0
                 portfolio_delta += bs_delta(S, env.put_pos["strike"], T, env.r, sigma, "put")
-                if instrument is None:
-                    instrument = _instrument_label(current_date, env.put_pos["dte"], env.put_pos["strike"], "put")
+                put_label     = _instrument_label(current_date, env.put_pos["dte"], env.put_pos["strike"], "put")
+
+            # Log both legs for strangles so the HTML can show both strikes
+            if call_label and put_label:
+                instrument = f"{call_label}|{put_label}"
+            else:
+                instrument = call_label or put_label
 
             pending.append({
                 "actionType": _ACTION_TYPE.get(action_id, "hold"),

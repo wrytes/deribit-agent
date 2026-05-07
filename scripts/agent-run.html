@@ -133,14 +133,23 @@ function pct(v){ return (v>=0?'+':'')+Number(v).toFixed(2)+'%'; }
 function cls(v){ return Number(v)>0?'pos':Number(v)<0?'neg':''; }
 function fmtDate(ts){ return new Date(ts).toLocaleDateString('en-US',{year:'numeric',month:'short',day:'numeric'}); }
 
-function parseStrike(instrument){
-  if(!instrument) return null;
-  const p = instrument.split('-');
-  return p.length>=3 ? Number(p[2]) : null;
+// instrument may be "BTC-DATE-K-C" (single leg) or "BTC-DATE-K-C|BTC-DATE-K-P" (strangle)
+function parseLegs(instrument){
+  if(!instrument) return {call:null, put:null};
+  const legs = instrument.split('|');
+  let call=null, put=null;
+  legs.forEach(leg=>{
+    const p=leg.split('-');
+    if(p.length<4) return;
+    const k=Number(p[2]), t=p[3].toUpperCase();
+    if(t==='C') call=k; else if(t==='P') put=k;
+  });
+  return {call, put};
 }
+function parseStrike(instrument){ return parseLegs(instrument).call ?? parseLegs(instrument).put; }
 function parseType(instrument){
   if(!instrument) return null;
-  const p = instrument.split('-');
+  const p=instrument.split('|')[0].split('-');
   return p.length>=4 ? p[3].toUpperCase() : null;
 }
 
@@ -192,9 +201,11 @@ function render(run, actions){
   const finalEq  = initCap + totalPnl;
 
   // Meta
+  const sess = run.session;
   document.getElementById('run-meta').innerHTML =
     `<strong>${run.name}</strong> · ${run.currency} · ${run.isLive?'🔴 Live':'📄 Paper'} · `+
-    `Status: <strong>${run.status}</strong> · Started: ${new Date(run.startedAt).toLocaleString()}`;
+    `Status: <strong>${run.status}</strong> · Started: ${new Date(run.startedAt).toLocaleString()}`+
+    (sess ? ` · Model: <strong>${sess.name}</strong> (${sess.algorithm})` : '');
 
   // Cards
   document.getElementById('stat-cards').innerHTML = [
@@ -220,18 +231,15 @@ function render(run, actions){
   const ivData    = actions.map(a=>a.ivRank!=null?Number(a.ivRank):null);
   const deltaData = actions.map(a=>a.delta!=null?Number(a.delta):null);
 
-  // Strike carry-forward
+  // Strike carry-forward — strangles log both legs as "CALL|PUT"
   const callStrike=[], putStrike=[];
   let cK=null, pK=null;
   actions.forEach(a=>{
-    const t=a.actionType, ins=a.instrument, st=parseStrike(ins), tp=parseType(ins);
-    if(t==='sell_call'){ cK=st; }
-    else if(t==='sell_put'){ pK=st; }
-    else if(t==='sell_strangle'){
-      if(tp==='C') cK=st; else if(tp==='P') pK=st;
-      // second leg handled on next action (strangle logs one action)
-    }
-    else if(t==='close'){ cK=null; pK=null; }
+    const t=a.actionType, legs=parseLegs(a.instrument);
+    if(t==='sell_call'){    cK=legs.call; }
+    else if(t==='sell_put'){ pK=legs.put; }
+    else if(t==='sell_strangle'){ if(legs.call!=null) cK=legs.call; if(legs.put!=null) pK=legs.put; }
+    else if(t==='close'){   cK=null; pK=null; }
     callStrike.push(cK);
     putStrike.push(pK);
   });
@@ -372,28 +380,20 @@ function render(run, actions){
       <td class="${cls(avg)}">${n(avg)}</td></tr>`;}).join('');
 
   // ── Action log ────────────────────────────────────────────────────────────
-  let cumLog=0;
-  document.getElementById('log-body').innerHTML=[...actions].reverse().map(a=>{
-    const pnl=Number(a.pnlBtc)||0;
-    cumLog+=pnl; // Note: reversed, so we pre-compute forward below
-    return a;
-  }) && (() => {
+  document.getElementById('log-body').innerHTML = (() => {
     let c=0;
     return [...actions].map(a=>{
       c+=Number(a.pnlBtc)||0;
       const eq=initCap+c;
       const btc=Number(a.btcPrice)||null;
-      const st=parseStrike(a.instrument);
-      const tp=parseType(a.instrument);
-      const ck=tp==='C'?st:null;
-      const pk=tp==='P'?st:null;
+      const legs=parseLegs(a.instrument);
       return`<tr>
         <td class="l dim">${new Date(a.timestamp).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'2-digit'})}</td>
         <td class="l"><span class="badge ${a.actionType}">${a.actionType}</span></td>
         <td class="l" style="font-family:monospace;font-size:.75rem">${a.instrument||'—'}</td>
         <td>${btc?'$'+btc.toLocaleString('en-US',{maximumFractionDigits:0}):'—'}</td>
-        <td>${ck?'$'+ck.toLocaleString():'—'}</td>
-        <td>${pk?'$'+pk.toLocaleString():'—'}</td>
+        <td>${legs.call?'$'+legs.call.toLocaleString():'—'}</td>
+        <td>${legs.put?'$'+legs.put.toLocaleString():'—'}</td>
         <td>${a.ivRank!=null?Number(a.ivRank).toFixed(1):'—'}</td>
         <td>${a.delta!=null?Number(a.delta).toFixed(3):'—'}</td>
         <td class="${cls(Number(a.pnlBtc))}">${n(a.pnlBtc)}</td>
