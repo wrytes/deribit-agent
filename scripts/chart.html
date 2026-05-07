@@ -201,25 +201,20 @@ function initCharts() {
   };
 
   const cEl = document.getElementById('chart');
-  candleChart = LightweightCharts.createChart(cEl, {
-    ...opts,
-    width: cEl.offsetWidth,
-    height: cEl.offsetHeight,
-  });
+  candleChart = LightweightCharts.createChart(cEl, { ...opts, autoSize: true });
 
   candleSeries = candleChart.addCandlestickSeries({
-    upColor:      '#1a7f37',
-    downColor:    '#cf222e',
+    upColor:       '#1a7f37',
+    downColor:     '#cf222e',
     borderVisible: false,
-    wickUpColor:  '#1a7f37',
+    wickUpColor:   '#1a7f37',
     wickDownColor: '#cf222e',
   });
 
   const vEl = document.getElementById('volume-chart');
   volumeChart = LightweightCharts.createChart(vEl, {
     ...opts,
-    width: vEl.offsetWidth,
-    height: vEl.offsetHeight,
+    autoSize: true,
     leftPriceScale: { visible: false },
     rightPriceScale: { visible: true, scaleMargins: { top: 0.1, bottom: 0 } },
     timeScale: { visible: false },
@@ -254,10 +249,7 @@ function initCharts() {
       `&nbsp;<span class="${cls}">${pct}%</span>`;
   });
 
-  window.addEventListener('resize', () => {
-    candleChart.applyOptions({ width: cEl.offsetWidth, height: cEl.offsetHeight });
-    volumeChart.applyOptions({ width: vEl.offsetWidth, height: vEl.offsetHeight });
-  });
+  // autoSize: true handles resize automatically
 }
 
 function fmt(n) {
