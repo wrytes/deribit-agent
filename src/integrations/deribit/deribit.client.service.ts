@@ -31,9 +31,9 @@ export class DeribitClientService implements OnModuleDestroy {
       this.clients.delete(userId);
     }
 
-    const account = await this.prisma.deribitAccount.findUnique({
-      where: { userId },
-    });
+    const account = await this.prisma.deribitAccount.findFirst({
+      where: { userId, isDefault: true },
+    }) ?? await this.prisma.deribitAccount.findFirst({ where: { userId } });
 
     if (!account) {
       throw new NotFoundException(

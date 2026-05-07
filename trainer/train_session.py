@@ -52,7 +52,7 @@ DEFAULT_ENV = {
 }
 
 DEFAULT_TRAIN = {
-    "total_timesteps": 100_000,
+    "total_timesteps": 20_000,
     "learning_rate":   0.005,
     "n_steps":         512,
     "batch_size":      64,

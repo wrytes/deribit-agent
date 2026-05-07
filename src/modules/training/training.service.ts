@@ -11,6 +11,11 @@ import { TrainingStatus } from '@prisma/client';
 
 export const TRAINING_QUEUE = 'training';
 
+export interface RiskProfile {
+  maxDrawdown?: number;    // 0.0–1.0, e.g. 0.20 = 20% max drawdown
+  aggressionLevel?: number; // 0.0 (very passive) to 1.0 (very aggressive)
+}
+
 export interface CreateSessionDto {
   name: string;
   description?: string;
@@ -19,6 +24,8 @@ export interface CreateSessionDto {
   dataTo: Date;
   resolution?: string;
   algorithm?: string;
+  allowedStrategies?: string[]; // e.g. ['STRANGLE', 'DELTA_NEUTRAL']
+  riskProfile?: RiskProfile;
   hyperparams?: Record<string, any>;
 }
 
@@ -49,6 +56,33 @@ export class TrainingService {
   // Training sessions
   // ---------------------------------------------------------------------------
 
+  private buildHyperparams(dto: CreateSessionDto): Record<string, any> {
+    const base = dto.hyperparams ?? {};
+    const envOverrides: Record<string, any> = {};
+
+    if (dto.allowedStrategies?.length) {
+      envOverrides.allowed_actions = dto.allowedStrategies.map((s) => s.toLowerCase());
+    }
+
+    if (dto.riskProfile) {
+      const { maxDrawdown, aggressionLevel } = dto.riskProfile;
+      if (maxDrawdown !== undefined) {
+        envOverrides.max_drawdown_pct = maxDrawdown;
+      }
+      if (aggressionLevel !== undefined) {
+        const a = Math.max(0, Math.min(1, aggressionLevel));
+        envOverrides.position_size_pct = parseFloat((0.1 + a * 0.4).toFixed(3));
+        envOverrides.ent_coef          = parseFloat((0.005 + a * 0.045).toFixed(4));
+        envOverrides.loss_multiplier   = parseFloat((1.5 - a * 0.5).toFixed(3));
+      }
+    }
+
+    return {
+      ...base,
+      env: { ...(base.env ?? {}), ...envOverrides },
+    };
+  }
+
   async createSession(dto: CreateSessionDto) {
     const session = await this.prisma.trainingSession.create({
       data: {
@@ -59,7 +93,7 @@ export class TrainingService {
         dataTo:      dto.dataTo,
         resolution:  dto.resolution  ?? '1D',
         algorithm:   dto.algorithm   ?? 'PPO',
-        hyperparams: dto.hyperparams ?? {},
+        hyperparams: this.buildHyperparams(dto),
         status:      TrainingStatus.QUEUED,
       },
     });

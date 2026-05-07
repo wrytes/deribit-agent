@@ -12,7 +12,7 @@ import { ApiBody, ApiOperation, ApiQuery, ApiSecurity, ApiTags } from '@nestjs/s
 import { ApiKeyGuard } from '../../common/guards/api-key.guard';
 import { RequireScopes } from '../../common/decorators/require-scopes.decorator';
 import { ApiKeyScope, TrainingStatus } from '@prisma/client';
-import { TrainingService } from './training.service';
+import { TrainingService, RiskProfile } from './training.service';
 
 @ApiTags('training')
 @ApiSecurity('api-key')
@@ -40,10 +40,24 @@ export class TrainingController {
         dataTo:      { type: 'string', format: 'date-time', example: '2025-01-01T00:00:00.000Z' },
         resolution:  { type: 'string', example: '1D', description: 'Candle resolution used for training data' },
         algorithm:   { type: 'string', enum: ['PPO', 'DQN', 'A2C'], example: 'PPO' },
+        allowedStrategies: {
+          type: 'array',
+          items: { type: 'string' },
+          example: ['STRANGLE', 'DELTA_NEUTRAL'],
+          description: 'Whitelist of strategy/action types the model may use during training. Options: STRANGLE, DELTA_NEUTRAL, COVERED_CALL, CASH_SECURED_PUT, IRON_CONDOR, STRADDLE',
+        },
+        riskProfile: {
+          type: 'object',
+          description: 'High-level risk parameters translated into env hyperparams',
+          properties: {
+            maxDrawdown:     { type: 'number', example: 0.20, description: '0.0–1.0 — episode ends when drawdown exceeds this' },
+            aggressionLevel: { type: 'number', example: 0.5, description: '0.0 (very passive) to 1.0 (very aggressive) — scales position size, exploration, and loss penalty' },
+          },
+        },
         hyperparams: {
           type: 'object',
           example: { training: { total_timesteps: 500000, learning_rate: 0.003 } },
-          description: 'Nested env/training overrides — merged with defaults in the trainer',
+          description: 'Low-level env/training overrides merged after riskProfile is applied',
         },
       },
     },
@@ -58,18 +72,22 @@ export class TrainingController {
       dataTo: string;
       resolution?: string;
       algorithm?: string;
+      allowedStrategies?: string[];
+      riskProfile?: RiskProfile;
       hyperparams?: Record<string, any>;
     },
   ) {
     return this.trainingService.createSession({
-      name:        body.name,
-      description: body.description,
-      currency:    body.currency,
-      dataFrom:    new Date(body.dataFrom),
-      dataTo:      new Date(body.dataTo),
-      resolution:  body.resolution,
-      algorithm:   body.algorithm,
-      hyperparams: body.hyperparams,
+      name:              body.name,
+      description:       body.description,
+      currency:          body.currency,
+      dataFrom:          new Date(body.dataFrom),
+      dataTo:            new Date(body.dataTo),
+      resolution:        body.resolution,
+      algorithm:         body.algorithm,
+      allowedStrategies: body.allowedStrategies,
+      riskProfile:       body.riskProfile,
+      hyperparams:       body.hyperparams,
     });
   }
 

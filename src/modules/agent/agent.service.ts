@@ -6,14 +6,15 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../core/database/prisma.service';
-import { AgentRunStatus } from '@prisma/client';
+import { AgentRunStatus, AgentRunType } from '@prisma/client';
 
 export interface CreateRunDto {
   userId: string;
   sessionId?: string;
   name: string;
   currency: string;
-  isLive?: boolean;
+  runType?: AgentRunType;
+  deribitAccountId?: string;
   initialCapitalBtc: number;
   notes?: string;
 }
@@ -48,13 +49,18 @@ export class AgentService {
   // ---------------------------------------------------------------------------
 
   async createRun(dto: CreateRunDto) {
+    if (dto.runType === AgentRunType.LIVE && !dto.deribitAccountId) {
+      throw new BadRequestException('deribitAccountId is required for LIVE runs');
+    }
+
     return this.prisma.agentRun.create({
       data: {
         userId:            dto.userId,
         sessionId:         dto.sessionId,
         name:              dto.name,
         currency:          dto.currency,
-        isLive:            dto.isLive ?? false,
+        runType:           dto.runType ?? AgentRunType.PAPER,
+        deribitAccountId:  dto.deribitAccountId,
         initialCapitalBtc: dto.initialCapitalBtc,
         currentCapitalBtc: dto.initialCapitalBtc,
         notes:             dto.notes,

@@ -89,7 +89,8 @@ export class TelegramUpdate implements OnModuleInit {
     const { id: userId } = await this.authService.getOrCreateUser(BigInt(from.id), from.username);
 
     const [deribitAccount, apiKeys] = await Promise.all([
-      this.prisma.deribitAccount.findUnique({ where: { userId } }),
+      this.prisma.deribitAccount.findFirst({ where: { userId, isDefault: true } })
+        .then((a) => a ?? this.prisma.deribitAccount.findFirst({ where: { userId } })),
       this.prisma.apiKey.findMany({ where: { userId, revokedAt: null }, orderBy: { createdAt: 'desc' } }),
     ]);
 
@@ -401,11 +402,17 @@ export class TelegramUpdate implements OnModuleInit {
       const clientId = tc.session.pendingAction?.data?.clientId as string;
       const { id: userId } = await this.authService.getOrCreateUser(BigInt(from.id), from.username);
 
-      await this.prisma.deribitAccount.upsert({
-        where: { userId },
-        create: { userId, clientId, clientSecret: text },
-        update: { clientId, clientSecret: text },
-      });
+      const existing = await this.prisma.deribitAccount.findFirst({ where: { userId } });
+      if (existing) {
+        await this.prisma.deribitAccount.update({
+          where: { id: existing.id },
+          data: { clientId, clientSecret: text },
+        });
+      } else {
+        await this.prisma.deribitAccount.create({
+          data: { userId, clientId, clientSecret: text, isDefault: true },
+        });
+      }
 
       this.deribitClientService.evictClient(userId);
       tc.session.pendingAction = undefined;

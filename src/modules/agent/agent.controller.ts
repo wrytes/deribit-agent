@@ -12,7 +12,7 @@ import { ApiKeyGuard } from '../../common/guards/api-key.guard';
 import { ScopesGuard } from '../../common/guards/scopes.guard';
 import { RequireScopes } from '../../common/decorators/require-scopes.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { ApiKeyScope, AgentRunStatus } from '@prisma/client';
+import { ApiKeyScope, AgentRunStatus, AgentRunType } from '@prisma/client';
 import { AgentService } from './agent.service';
 
 @ApiTags('agent')
@@ -28,7 +28,7 @@ export class AgentController {
 
   @Post('runs')
   @RequireScopes(ApiKeyScope.AGENT_WRITE)
-  @ApiOperation({ summary: 'Create a new agent run (paper or live)' })
+  @ApiOperation({ summary: 'Create a new agent run (backtest, paper, or live)' })
   @ApiBody({
     schema: {
       type: 'object',
@@ -37,7 +37,8 @@ export class AgentController {
         sessionId:         { type: 'string', example: 'cuid...', description: 'Trained model session to use' },
         name:              { type: 'string', example: 'btc-paper-run-1' },
         currency:          { type: 'string', enum: ['BTC', 'ETH'], example: 'BTC' },
-        isLive:            { type: 'boolean', example: false, description: 'false = paper trading, true = live orders' },
+        runType:           { type: 'string', enum: ['BACKTEST', 'PAPER', 'LIVE'], example: 'PAPER', description: 'BACKTEST = historical replay only, PAPER = live data without real orders, LIVE = real Deribit orders' },
+        deribitAccountId:  { type: 'string', example: 'cuid...', description: 'Required for LIVE runs — ID from GET /deribit-account' },
         initialCapitalBtc: { type: 'number', example: 0.1 },
         notes:             { type: 'string', example: 'First paper run with btc-ppo-v1' },
       },
@@ -50,7 +51,8 @@ export class AgentController {
       sessionId?: string;
       name: string;
       currency: string;
-      isLive?: boolean;
+      runType?: AgentRunType;
+      deribitAccountId?: string;
       initialCapitalBtc: number;
       notes?: string;
     },
