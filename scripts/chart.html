@@ -10,8 +10,8 @@
 
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      background: #0d1117;
-      color: #c9d1d9;
+      background: #f6f8fa;
+      color: #1f2328;
       min-height: 100vh;
       display: flex;
       flex-direction: column;
@@ -19,19 +19,19 @@
 
     header {
       padding: 14px 20px;
-      border-bottom: 1px solid #21262d;
+      border-bottom: 1px solid #d0d7de;
       display: flex;
       align-items: center;
       gap: 12px;
-      background: #161b22;
+      background: #ffffff;
     }
-    header h1 { font-size: 15px; font-weight: 600; color: #f0f6fc; }
-    header span { font-size: 12px; color: #8b949e; }
+    header h1 { font-size: 15px; font-weight: 600; color: #1f2328; }
+    header span { font-size: 12px; color: #656d76; }
 
     .toolbar {
       padding: 10px 20px;
-      border-bottom: 1px solid #21262d;
-      background: #161b22;
+      border-bottom: 1px solid #d0d7de;
+      background: #ffffff;
       display: flex;
       flex-wrap: wrap;
       gap: 10px;
@@ -39,19 +39,19 @@
     }
 
     .field { display: flex; flex-direction: column; gap: 3px; }
-    .field label { font-size: 11px; color: #8b949e; text-transform: uppercase; letter-spacing: 0.5px; }
+    .field label { font-size: 11px; color: #656d76; text-transform: uppercase; letter-spacing: 0.5px; }
 
     input, select {
-      background: #0d1117;
-      border: 1px solid #30363d;
-      color: #c9d1d9;
+      background: #f6f8fa;
+      border: 1px solid #d0d7de;
+      color: #1f2328;
       border-radius: 6px;
       padding: 5px 9px;
       font-size: 13px;
       height: 32px;
       outline: none;
     }
-    input:focus, select:focus { border-color: #388bfd; }
+    input:focus, select:focus { border-color: #0969da; box-shadow: 0 0 0 3px rgba(9,105,218,.1); }
     input[type="text"] { width: 220px; }
     input[type="date"] { width: 140px; }
 
@@ -64,25 +64,25 @@
       font-size: 13px;
       font-weight: 500;
     }
-    .btn-primary { background: #238636; color: #fff; }
-    .btn-primary:hover { background: #2ea043; }
-    .btn-secondary { background: #21262d; color: #c9d1d9; border: 1px solid #30363d; }
-    .btn-secondary:hover { background: #30363d; }
+    .btn-primary { background: #1a7f37; color: #fff; }
+    .btn-primary:hover { background: #1a7f37cc; }
+    .btn-secondary { background: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; }
+    .btn-secondary:hover { background: #eaeef2; }
 
     .stats {
       padding: 6px 20px;
       font-size: 12px;
-      color: #8b949e;
-      background: #0d1117;
-      border-bottom: 1px solid #21262d;
+      color: #656d76;
+      background: #ffffff;
+      border-bottom: 1px solid #d0d7de;
       min-height: 28px;
       display: flex;
       align-items: center;
       gap: 16px;
     }
-    .stats .tag { color: #58a6ff; }
-    .stats .up   { color: #3fb950; }
-    .stats .down { color: #f85149; }
+    .stats .tag { color: #0969da; font-weight: 600; }
+    .stats .up   { color: #1a7f37; }
+    .stats .down { color: #cf222e; }
 
     #chart-container {
       flex: 1;
@@ -94,7 +94,7 @@
     #volume-container {
       height: 100px;
       position: relative;
-      border-top: 1px solid #21262d;
+      border-top: 1px solid #d0d7de;
     }
     #volume-chart { width: 100%; height: 100%; }
 
@@ -104,14 +104,14 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      color: #8b949e;
+      color: #656d76;
       font-size: 14px;
     }
 
     .error-bar {
-      background: #3d1c1c;
-      color: #f85149;
-      border-top: 1px solid #f851493d;
+      background: #ffebe9;
+      color: #cf222e;
+      border-top: 1px solid #cf222e3d;
       padding: 8px 20px;
       font-size: 13px;
       display: none;
@@ -193,11 +193,11 @@ let volumeSeries = null;
 // ---------------------------------------------------------------------------
 function initCharts() {
   const opts = {
-    layout: { background: { color: '#0d1117' }, textColor: '#c9d1d9' },
-    grid: { vertLines: { color: '#161b22' }, horzLines: { color: '#161b22' } },
+    layout: { background: { color: '#ffffff' }, textColor: '#1f2328' },
+    grid: { vertLines: { color: '#eaeef2' }, horzLines: { color: '#eaeef2' } },
     crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-    rightPriceScale: { borderColor: '#21262d' },
-    timeScale: { borderColor: '#21262d', timeVisible: true },
+    rightPriceScale: { borderColor: '#d0d7de' },
+    timeScale: { borderColor: '#d0d7de', timeVisible: true },
   };
 
   const cEl = document.getElementById('chart');
@@ -208,11 +208,11 @@ function initCharts() {
   });
 
   candleSeries = candleChart.addCandlestickSeries({
-    upColor: '#3fb950',
-    downColor: '#f85149',
+    upColor:      '#1a7f37',
+    downColor:    '#cf222e',
     borderVisible: false,
-    wickUpColor: '#3fb950',
-    wickDownColor: '#f85149',
+    wickUpColor:  '#1a7f37',
+    wickDownColor: '#cf222e',
   });
 
   const vEl = document.getElementById('volume-chart');
@@ -319,7 +319,7 @@ async function load() {
   const volumes = rows.map((r, i) => ({
     time:  Math.floor(new Date(r.timestamp).getTime() / 1000),
     value: +r.volume,
-    color: +r.close >= +r.open ? '#3fb95055' : '#f8514955',
+    color: +r.close >= +r.open ? '#1a7f3755' : '#cf222e55',
   }));
 
   candleSeries.setData(candles);
