@@ -159,9 +159,15 @@ def run_session(
     pending        : list[dict] = []
 
     while True:
-        row       = env.data[min(env.idx, len(env.data) - 1)]
-        S, dvol   = float(row[0]), float(row[1])
-        sigma     = env._sigma(dvol)
+        row     = env.data[min(env.idx, len(env.data) - 1)]
+        S, dvol = float(row[0]), float(row[1])
+        sigma   = env._sigma(dvol)
+
+        # Snapshot pre-step state so we can compute real P&L and decide logging
+        call_pos_before = env.call_pos
+        put_pos_before  = env.put_pos
+        had_position    = call_pos_before is not None or put_pos_before is not None
+        equity_before   = env._prev_equity
 
         action, _ = model.predict(obs, deterministic=True)
         action_id = int(action)
@@ -170,36 +176,51 @@ def run_session(
         total_reward += float(reward)
         steps        += 1
 
-        if action_id != 0:
-            portfolio_delta = 0.0
-            step_idx        = max(0, env.idx - 1)
-            current_date    = datetime.combine(dates[step_idx].date(), datetime.min.time(), tzinfo=timezone.utc)
+        # Real P&L = actual equity change, no reward-shaping bonuses/penalties
+        real_pnl_btc = env._prev_equity - equity_before
+
+        action_type = _ACTION_TYPE.get(action_id, "hold")
+        is_hold  = action_id == 0
+        is_close = action_type == "close"
+        is_sell  = action_type.startswith("sell_")
+
+        # Log: sell (new trade), close (only if there was a position), hold (only while a position is open)
+        should_log = is_sell or (is_close and had_position) or (is_hold and had_position)
+
+        if should_log:
+            step_idx     = max(0, env.idx - 1)
+            current_date = datetime.combine(dates[step_idx].date(), datetime.min.time(), tzinfo=timezone.utc)
+
+            # Sells: use after-step positions (just opened); holds/closes: use before-step (still open / just closed)
+            log_call = env.call_pos if is_sell else call_pos_before
+            log_put  = env.put_pos  if is_sell else put_pos_before
 
             call_label, put_label = None, None
-            if env.call_pos:
-                T             = env.call_pos["dte"] / 365.0
-                portfolio_delta += bs_delta(S, env.call_pos["strike"], T, env.r, sigma, "call")
-                call_label    = _instrument_label(current_date, env.call_pos["dte"], env.call_pos["strike"], "call")
+            portfolio_delta = 0.0
 
-            if env.put_pos:
-                T             = env.put_pos["dte"] / 365.0
-                portfolio_delta += bs_delta(S, env.put_pos["strike"], T, env.r, sigma, "put")
-                put_label     = _instrument_label(current_date, env.put_pos["dte"], env.put_pos["strike"], "put")
+            if log_call:
+                T = log_call["dte"] / 365.0
+                portfolio_delta += bs_delta(S, log_call["strike"], T, env.r, sigma, "call")
+                call_label = _instrument_label(current_date, log_call["dte"], log_call["strike"], "call")
 
-            # Log both legs for strangles so the HTML can show both strikes
+            if log_put:
+                T = log_put["dte"] / 365.0
+                portfolio_delta += bs_delta(S, log_put["strike"], T, env.r, sigma, "put")
+                put_label = _instrument_label(current_date, log_put["dte"], log_put["strike"], "put")
+
             if call_label and put_label:
                 instrument = f"{call_label}|{put_label}"
             else:
                 instrument = call_label or put_label
 
             pending.append({
-                "actionType": _ACTION_TYPE.get(action_id, "hold"),
+                "actionType": action_type,
                 "timestamp":  current_date.strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "instrument": instrument,
                 "btcPrice":   round(S, 2),
                 "delta":      round(portfolio_delta, 4),
                 "ivRank":     round(dvol, 2),
-                "pnlBtc":     round(float(reward) * env_cfg["initial_margin_btc"], 6),
+                "pnlBtc":     round(real_pnl_btc, 6),
                 "reason":     _action_reason(action_id),
             })
 
