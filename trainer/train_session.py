@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 MODELS_DIR = Path(os.environ.get("MODELS_DIR", "/app/models"))
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-N_ENVS = int(os.environ.get("N_ENVS", "4"))
+N_ENVS = int(os.environ.get("N_ENVS", "16"))
 
 # ---------------------------------------------------------------------------
 # Defaults — overridden by session.hyperparams JSON
@@ -39,12 +39,13 @@ N_ENVS = int(os.environ.get("N_ENVS", "4"))
 
 DEFAULT_ENV = {
     "initial_margin_btc": 1.0,
-    "position_size_pct":  0.5,
+    "position_size_pct":  1.0,
     "max_position_btc":   5.0,
+    "min_order_size":     0.1,   # 0.1 BTC for BTC options, 1.0 ETH for ETH options
     "expiry_days":        7,
     "max_margin_ratio":   0.8,
     "risk_free_rate":     0.05,
-    "episode_length":     365,
+    "episode_length":     90,
     "fast_margin":        True,
     "capital_eff_bonus":  0.0001,
     "delta_threshold":    0.30,
@@ -54,7 +55,7 @@ DEFAULT_ENV = {
 }
 
 DEFAULT_TRAIN = {
-    "total_timesteps": 20_000,
+    "total_timesteps": 300_000,
     "learning_rate":   0.005,
     "n_steps":         512,
     "batch_size":      64,
@@ -255,6 +256,13 @@ def train_session(session_id: str) -> dict:
         gamma         = float(train_cfg["gamma"]),
         ent_coef      = float(train_cfg.get("ent_coef", 0.02)),
         verbose       = 1,
+    )
+
+    logger.info(
+        "Policy input dim: %d  obs_space: %s  action_space: %s",
+        model.policy.mlp_extractor.policy_net[0].in_features,
+        vec_env.observation_space.shape,
+        vec_env.action_space,
     )
 
     checkpoint_cb = CheckpointCallback(
