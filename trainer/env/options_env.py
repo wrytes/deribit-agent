@@ -46,6 +46,20 @@ ACTION_DEFS = {
 
 TRADE_FEE = 0.002  # 0.2% of premium on open/close; 0% on expiry settlement
 
+# Strategy → sell action ID mapping (hold=0, close=16–20 always valid)
+_STRATEGY_ORDER = ["strangle", "straddle", "covered_call", "cash_secured_put", "delta_neutral", "iron_condor"]
+
+_STRATEGY_ACTION_MAP: dict[str, frozenset[int]] = {
+    "strangle":         frozenset({13, 14, 15}),
+    "straddle":         frozenset({1, 8}),              # ATM call + ATM put
+    "covered_call":     frozenset({1, 2, 3, 4, 5, 6, 7}),
+    "cash_secured_put": frozenset({8, 9, 10, 11, 12}),
+    "delta_neutral":    frozenset({13, 14, 15}),        # strangles are delta-balanced
+    "iron_condor":      frozenset({13, 14, 15}),        # wing-buy not in action space; strangle proxy
+}
+
+_ALL_SELL_ACTIONS = frozenset(range(1, 16))  # action IDs 1–15
+
 # Deribit portfolio margin stress scenarios
 _PM_PRICE_SHOCKS   = np.array([-0.16, -0.12, -0.08, -0.04, 0.0, 0.04, 0.08, 0.12, 0.16])
 _PM_PRICE_EXTENDED = np.array([-0.66, -0.33, 0.50, 1.00, 2.00, 3.00, 4.00, 5.00])
@@ -69,11 +83,14 @@ class OptionsEnv(gym.Env):
       expire OTM      nothing (premium already in margin_balance)
       expire ITM      margin_balance -= max(S_T−K, 0)/S_T × size
 
-    Observation (15 floats):
-      btc_price_norm, return_1d, dvol_norm, hv_norm, iv_hv_spread,
-      episode_progress, has_position, dte_norm,
+    Observation (27 floats):
+      btc_price_norm, ret_1d, dvol_norm, hv_norm, vol_premium, dvol_change,
+      episode_progress, has_call, has_put, dte_norm,
       call_moneyness, put_moneyness, call_delta, put_delta,
-      unrealized_btc_norm, margin_balance_norm, margin_ratio
+      unrealized_btc_norm, margin_balance_norm, margin_ratio,
+      equity_drawdown, btc_price_norm_7d, ret_7d, equity_drawdown_7d,
+      mask_strangle, mask_straddle, mask_covered_call,
+      mask_cash_secured_put, mask_delta_neutral, mask_iron_condor
 
     Reward: Δequity_btc / initial_margin_btc per step.
     Termination: equity_btc drops below 50% of initial_margin_btc.
@@ -100,11 +117,24 @@ class OptionsEnv(gym.Env):
 
         self.action_space      = spaces.Discrete(len(ACTION_DEFS))
         self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(15,), dtype=np.float32
+            low=-np.inf, high=np.inf, shape=(27,), dtype=np.float32
         )
 
         # fast_margin=True skips IV shocks (17 scenarios vs 51) — use for training
         self._pm_iv_shocks   = np.array([0.0]) if config.get("fast_margin", True) else _PM_IV_SHOCKS
+
+        # Action masking from allowed_actions config; empty list = all sell actions valid
+        _allowed = config.get("allowed_actions", [])
+        if _allowed:
+            self._valid_sell_actions = frozenset().union(*(_STRATEGY_ACTION_MAP.get(s, frozenset()) for s in _allowed))
+        else:
+            self._valid_sell_actions = _ALL_SELL_ACTIONS
+
+        # 6-float strategy mask baked into every observation (static per session)
+        self._allowed_mask = np.array(
+            [1.0 if (not _allowed or s in _allowed) else 0.0 for s in _STRATEGY_ORDER],
+            dtype=np.float32,
+        )
 
         self.margin_balance  = self.initial_margin_btc
         self.call_pos        = None
@@ -113,6 +143,7 @@ class OptionsEnv(gym.Env):
         self.step_count      = 0
         self._initial_price  = 1.0
         self._prev_equity    = self.initial_margin_btc
+        self._peak_equity    = self.initial_margin_btc   # high-water mark for drawdown obs
         self._cached_margin  = 0.0   # updated once per step, reused in _obs()
 
     # ------------------------------------------------------------------
@@ -255,14 +286,18 @@ class OptionsEnv(gym.Env):
     def _obs(self):
         S, dvol, hv = self._row()
         sigma  = self._sigma(dvol)
-        prev_S = self._row(max(0, self.idx - 1))[0]
-        ret_1d = (S - prev_S) / prev_S if prev_S > 0 else 0.0
+        prev_S    = float(self._row(max(0, self.idx - 1))[0])
+        prev_dvol = float(self._row(max(0, self.idx - 1))[1])
+        ret_1d    = (S - prev_S) / prev_S if prev_S > 0 else 0.0
 
         unreal_btc  = self._unrealized_btc(S, dvol)
         margin_usd  = self._cached_margin          # computed once per step in step()
         margin_val  = self.margin_balance * S
-        has_pos     = float(self.call_pos is not None or self.put_pos is not None)
-        min_dte     = min(
+        equity_btc  = self.margin_balance + unreal_btc
+
+        has_call = float(self.call_pos is not None)
+        has_put  = float(self.put_pos  is not None)
+        min_dte  = min(
             self.call_pos["dte"] if self.call_pos else self.expiry_days,
             self.put_pos["dte"]  if self.put_pos  else self.expiry_days,
         )
@@ -274,22 +309,41 @@ class OptionsEnv(gym.Env):
         call_delta = bs_delta(S, self.call_pos["strike"], call_T, self.r, sigma, "call") if self.call_pos else 0.0
         put_delta  = bs_delta(S, self.put_pos["strike"],  put_T,  self.r, sigma, "put")  if self.put_pos  else 0.0
 
+        # Rolling signals
+        dvol_change     = (dvol - prev_dvol) / 100.0
+        equity_drawdown = (equity_btc - self._peak_equity) / self.initial_margin_btc
+
+        S_7d         = float(self._row(max(0, self.idx - 7))[0])
+        btc_norm_7d  = S / S_7d if S_7d > 0 else 1.0
+        ret_7d       = (S - S_7d) / S_7d if S_7d > 0 else 0.0
+        eq_7d_ago    = (self._equity_history[0]
+                        if len(self._equity_history) == self._equity_history.maxlen
+                        else self.initial_margin_btc)
+        equity_dd_7d = (equity_btc - eq_7d_ago) / self.initial_margin_btc
+
         return np.array([
-            S / self._initial_price,                               # BTC price (normalised to episode start)
-            ret_1d,                                                # daily return
-            dvol / 100.0,                                          # IV (0–1)
-            hv   / 100.0,                                          # HV (0–1)
-            (dvol - hv) / 100.0,                                   # vol premium
-            self.step_count / self.episode_length,                 # episode progress
-            has_pos,                                               # has open position
-            min_dte / self.expiry_days,                            # DTE normalised
-            call_mono,                                             # call strike vs spot
-            put_mono,                                              # put strike vs spot
-            call_delta,
-            put_delta,
-            unreal_btc / self.initial_margin_btc,                  # unrealised liability (BTC normalised)
-            self.margin_balance / self.initial_margin_btc,         # margin balance (BTC normalised)
-            margin_usd / max(margin_val, 1.0),                     # margin utilisation ratio
+            S / self._initial_price,                               # 0  btc_price_norm
+            ret_1d,                                                # 1  ret_1d
+            dvol / 100.0,                                          # 2  dvol_norm
+            hv   / 100.0,                                          # 3  hv_norm
+            (dvol - hv) / 100.0,                                   # 4  vol_premium
+            dvol_change,                                           # 5  dvol_change
+            self.step_count / self.episode_length,                 # 6  episode_progress
+            has_call,                                              # 7  has_call
+            has_put,                                               # 8  has_put
+            min_dte / self.expiry_days,                            # 9  dte_norm
+            call_mono,                                             # 10 call_moneyness
+            put_mono,                                              # 11 put_moneyness
+            call_delta,                                            # 12 call_delta
+            put_delta,                                             # 13 put_delta
+            unreal_btc / self.initial_margin_btc,                  # 14 unrealized_btc_norm
+            self.margin_balance / self.initial_margin_btc,         # 15 margin_balance_norm
+            margin_usd / max(margin_val, 1.0),                     # 16 margin_ratio
+            equity_drawdown,                                       # 17 equity_drawdown
+            btc_norm_7d,                                           # 18 btc_price_norm_7d
+            ret_7d,                                                # 19 ret_7d
+            equity_dd_7d,                                          # 20 equity_drawdown_7d
+            *self._allowed_mask,                                   # 21–26 strategy mask ×6
         ], dtype=np.float32)
 
     # ------------------------------------------------------------------
@@ -306,6 +360,7 @@ class OptionsEnv(gym.Env):
         self.put_pos        = None
         self.step_count     = 0
         self._prev_equity   = self.initial_margin_btc
+        self._peak_equity   = self.initial_margin_btc
         self._equity_history.clear()
         self._equity_history.append(self.initial_margin_btc)
         return self._obs(), {}
@@ -325,6 +380,10 @@ class OptionsEnv(gym.Env):
         self._cached_margin = self._portfolio_margin_usd(S, sigma)
 
         # ── 3. Execute action ─────────────────────────────────────────────────
+        # Mask disallowed sell actions → hold (model learns not to try them)
+        if action in _ALL_SELL_ACTIONS and action not in self._valid_sell_actions:
+            action = 0
+
         btc_delta = 0.0
         defn = ACTION_DEFS[action]
 
@@ -379,6 +438,7 @@ class OptionsEnv(gym.Env):
         equity_now  = self._equity_btc(S_new, dvol_new)
         reward      = (equity_now - self._prev_equity) / self.initial_margin_btc
         self._prev_equity = equity_now
+        self._peak_equity = max(self._peak_equity, equity_now)
 
         # Capital efficiency bonus (BTC-scaled)
         has_pos = self.call_pos is not None or self.put_pos is not None
