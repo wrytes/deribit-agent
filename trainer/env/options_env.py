@@ -113,6 +113,8 @@ class OptionsEnv(gym.Env):
         self.delta_penalty_coef = float(config.get("delta_penalty_coef", 0.002))
         self.loss_multiplier    = float(config.get("loss_multiplier", 1.0))
         self.loss_threshold     = float(config.get("loss_threshold", 0.01))
+        # Minimum order size per leg (0.1 BTC for BTC options, 1.0 ETH for ETH options)
+        self.min_order_size     = float(config.get("min_order_size", 0.1))
         self._equity_history    = deque(maxlen=self.expiry_days)  # rolling weekly window
 
         self.action_space      = spaces.Discrete(len(ACTION_DEFS))
@@ -157,8 +159,11 @@ class OptionsEnv(gym.Env):
         return max(dvol / 100.0, 1e-6)
 
     def _position_size(self):
-        """Fractional Kelly sizing in BTC: margin_balance × pct, capped."""
-        return min(self.margin_balance * self.position_size_pct, self.max_position_btc)
+        """Fractional Kelly sizing rounded down to min_order_size increments."""
+        raw = min(self.margin_balance * self.position_size_pct, self.max_position_btc)
+        # Floor to nearest increment (e.g. 0.1 BTC or 1 ETH) — returns 0.0 if below minimum
+        increments = int(raw / self.min_order_size)
+        return increments * self.min_order_size
 
     def _is_covered_call(self):
         """True when margin_balance ≥ call position size — can't blow up."""
@@ -419,7 +424,7 @@ class OptionsEnv(gym.Env):
                 prospective.append(({"strike": K_p, "size": size, "dte": self.expiry_days, "type": "put"}, "put"))
 
             prospective_margin = self._portfolio_margin_usd(S, sigma, extra_positions=prospective)
-            if prospective_margin < margin_val * margin_cap:
+            if prospective_margin < margin_val * margin_cap and size >= self.min_order_size:
                 if want_call:
                     self.call_pos, p = self._sell_leg(S, sigma, K_c, "call")
                     btc_delta += p

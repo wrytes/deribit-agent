@@ -61,10 +61,11 @@ def _action_reason(action_id: int) -> str:
     return "sell " + " + ".join(parts)
 
 
-def _instrument_label(current_date: datetime, dte: int, strike: float, opt_type: str) -> str:
+def _instrument_label(current_date: datetime, dte: int, strike: float, opt_type: str, size: float | None = None) -> str:
     expiry = (current_date + timedelta(days=dte)).strftime("%d%b%y").upper()
     suffix = "C" if opt_type == "call" else "P"
-    return f"BTC-{expiry}-{int(strike)}-{suffix}"
+    name = f"BTC-{expiry}-{int(strike)}-{suffix}"
+    return f"{size}:{name}" if size is not None else name
 
 
 def _flush_actions(nestjs_url: str, api_key: str, run_id: str, actions: list[dict], chunk_size: int = 200) -> None:
@@ -200,12 +201,12 @@ def run_session(
             if log_call:
                 T = log_call["dte"] / 365.0
                 portfolio_delta += bs_delta(S, log_call["strike"], T, env.r, sigma, "call")
-                call_label = _instrument_label(current_date, log_call["dte"], log_call["strike"], "call")
+                call_label = _instrument_label(current_date, log_call["dte"], log_call["strike"], "call", log_call["size"])
 
             if log_put:
                 T = log_put["dte"] / 365.0
                 portfolio_delta += bs_delta(S, log_put["strike"], T, env.r, sigma, "put")
-                put_label = _instrument_label(current_date, log_put["dte"], log_put["strike"], "put")
+                put_label = _instrument_label(current_date, log_put["dte"], log_put["strike"], "put", log_put["size"])
 
             if call_label and put_label:
                 instrument = f"{call_label}|{put_label}"
