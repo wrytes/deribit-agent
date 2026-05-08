@@ -184,8 +184,7 @@ def run_session(
         is_close = action_type == "close"
         is_sell  = action_type.startswith("sell_")
 
-        # Log: sell (new trade), close (only if there was a position), hold (only while a position is open)
-        should_log = is_sell or (is_close and had_position) or (is_hold and had_position)
+        should_log = True  # log every day for continuous accounting
 
         if should_log:
             step_idx     = max(0, env.idx - 1)
