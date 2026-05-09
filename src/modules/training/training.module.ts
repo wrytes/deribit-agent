@@ -5,12 +5,14 @@ import { TrainingController } from './training.controller';
 import { TrainingProcessor } from './training.processor';
 import { DatabaseModule } from '../../core/database/database.module';
 import { AuthModule } from '../auth/auth.module';
+import { AGENT_RUN_QUEUE } from '../agent/agent.service';
 
 @Module({
   imports: [
     DatabaseModule,
     AuthModule,
     BullModule.registerQueue({ name: TRAINING_QUEUE }),
+    BullModule.registerQueue({ name: AGENT_RUN_QUEUE }),
   ],
   providers: [TrainingService, TrainingProcessor],
   controllers: [TrainingController],

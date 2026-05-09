@@ -7,7 +7,8 @@ import {
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { PrismaService } from '../../core/database/prisma.service';
-import { TrainingStatus } from '@prisma/client';
+import { AgentRunStatus, AgentRunType, TrainingStatus } from '@prisma/client';
+import { AGENT_RUN_QUEUE } from '../agent/agent.service';
 
 export const TRAINING_QUEUE = 'training';
 
@@ -50,6 +51,7 @@ export class TrainingService {
   constructor(
     private readonly prisma: PrismaService,
     @InjectQueue(TRAINING_QUEUE) private readonly trainingQueue: Queue,
+    @InjectQueue(AGENT_RUN_QUEUE) private readonly agentRunQueue: Queue,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -261,17 +263,19 @@ export class TrainingService {
       win_rate?: number;
     },
     error?: string,
+    userId?: string,
   ) {
     if (error) {
       return this.markFailed(id, error);
     }
 
+    const session = await this.getSession(id);
     await this.markCompleted(id, result?.total_timesteps, result?.final_reward);
 
     if (result?.model_path) {
       await this.registerModel({
         sessionId:   id,
-        name:        result.model_name ?? `model-${id.slice(0, 8)}`,
+        name:        session.name,
         storagePath: result.model_path,
         sizeBytes:   result.size_bytes,
         meanReward:  result.mean_reward,
@@ -280,9 +284,51 @@ export class TrainingService {
         maxDrawdown: result.max_drawdown,
         winRate:     result.win_rate,
       });
+
+      if (userId) {
+        try {
+          const backtestRun = await this.prisma.agentRun.create({
+            data: {
+              userId,
+              sessionId:         id,
+              name:              `${session.name} — auto backtest`,
+              currency:          session.currency,
+              runType:           AgentRunType.BACKTEST,
+              initialCapitalBtc: 1,
+              currentCapitalBtc: 1,
+              status:            AgentRunStatus.ACTIVE,
+              totalActions:      0,
+              realizedPnlBtc:    0,
+            },
+          });
+
+          await this.agentRunQueue.add('execute', { runId: backtestRun.id }, {
+            attempts: 2,
+            backoff: { type: 'fixed', delay: 5_000 },
+            removeOnComplete: false,
+            removeOnFail:     false,
+          });
+
+          this.logger.log(`Auto-deployed backtest run ${backtestRun.id} for session ${id}`);
+        } catch (err) {
+          this.logger.error(`Auto-deploy failed for session ${id}: ${(err as Error).message}`);
+        }
+      }
     }
 
     return { ok: true };
+  }
+
+  async updateSession(id: string, data: { name?: string; description?: string }) {
+    const session = await this.prisma.trainingSession.findUnique({ where: { id } });
+    if (!session) throw new NotFoundException('Training session not found');
+    return this.prisma.trainingSession.update({ where: { id }, data });
+  }
+
+  async updateModel(id: string, data: { name?: string }) {
+    const model = await this.prisma.trainedModel.findUnique({ where: { id } });
+    if (!model) throw new NotFoundException('Trained model not found');
+    return this.prisma.trainedModel.update({ where: { id }, data });
   }
 
   async listModels() {

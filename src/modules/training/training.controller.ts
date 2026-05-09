@@ -4,19 +4,22 @@ import {
   Delete,
   Get,
   Param,
+  Patch,
   Post,
   Query,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBody, ApiOperation, ApiQuery, ApiSecurity, ApiTags } from '@nestjs/swagger';
 import { ApiKeyGuard } from '../../common/guards/api-key.guard';
+import { ScopesGuard } from '../../common/guards/scopes.guard';
 import { RequireScopes } from '../../common/decorators/require-scopes.decorator';
+import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ApiKeyScope, TrainingStatus } from '@prisma/client';
 import { TrainingService, RiskProfile } from './training.service';
 
 @ApiTags('training')
 @ApiSecurity('api-key')
-@UseGuards(ApiKeyGuard)
+@UseGuards(ApiKeyGuard, ScopesGuard)
 @Controller('training')
 export class TrainingController {
   constructor(private readonly trainingService: TrainingService) {}
@@ -113,6 +116,25 @@ export class TrainingController {
     return this.trainingService.cancelSession(id);
   }
 
+  @Patch('sessions/:id')
+  @RequireScopes(ApiKeyScope.TRAINING_WRITE)
+  @ApiOperation({ summary: 'Update session name or description' })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        name:        { type: 'string' },
+        description: { type: 'string' },
+      },
+    },
+  })
+  updateSession(
+    @Param('id') id: string,
+    @Body() body: { name?: string; description?: string },
+  ) {
+    return this.trainingService.updateSession(id, body);
+  }
+
   @Delete('sessions/:id')
   @RequireScopes(ApiKeyScope.TRAINING_WRITE)
   @ApiOperation({
@@ -155,10 +177,11 @@ export class TrainingController {
     },
   })
   trainerCallback(
+    @CurrentUser() user: { id: string },
     @Param('id') id: string,
     @Body() body: { result?: Record<string, any>; error?: string },
   ) {
-    return this.trainingService.handleTrainerCallback(id, body.result, body.error);
+    return this.trainingService.handleTrainerCallback(id, body.result, body.error, user.id);
   }
 
   // ---------------------------------------------------------------------------
@@ -188,6 +211,21 @@ export class TrainingController {
   @ApiOperation({ summary: 'Get a trained model by ID' })
   getModel(@Param('id') id: string) {
     return this.trainingService.getModel(id);
+  }
+
+  @Patch('models/:id')
+  @RequireScopes(ApiKeyScope.TRAINING_WRITE)
+  @ApiOperation({ summary: 'Update model name' })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+      },
+    },
+  })
+  updateModel(@Param('id') id: string, @Body() body: { name?: string }) {
+    return this.trainingService.updateModel(id, body);
   }
 
   @Post('models')
