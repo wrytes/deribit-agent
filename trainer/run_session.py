@@ -18,18 +18,12 @@ from pathlib import Path
 
 import psycopg2
 import psycopg2.extras
-from stable_baselines3 import PPO
 
+from config.defaults import DEFAULT_ENV
+from data.loader import build_data, connect, load_candles, load_dvol, load_session
 from env.black_scholes import delta as bs_delta
 from env.options_env import ACTION_DEFS, OptionsEnv
-from train_session import (
-    DEFAULT_ENV,
-    _build_data,
-    _connect,
-    _load_candles,
-    _load_dvol,
-    _load_session,
-)
+from model.registry import ModelRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -103,9 +97,9 @@ def run_session(
     api_key    = os.environ.get("NESTJS_API_KEY", "")
 
     # ── DB: session config + model path ───────────────────────────────────────
-    conn = _connect()
+    conn = connect()
     try:
-        session = _load_session(conn, session_id)
+        session = load_session(conn, session_id)
 
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
@@ -121,38 +115,45 @@ def run_session(
         from_dt = data_from or session["dataFrom"]
         to_dt   = data_to   or datetime.now(timezone.utc)
 
-        candles = _load_candles(conn, session["currency"], from_dt, to_dt)
-        dvol_df = _load_dvol(conn, from_dt, to_dt)
+        # Load 45 extra calendar days (~30 trading days) before from_dt so that
+        # 30-day rolling lookbacks in the observation have real prior data from step 1.
+        _WARMUP_DAYS = 45
+        warmup_from = from_dt - timedelta(days=_WARMUP_DAYS)
+
+        candles = load_candles(conn, session["currency"], warmup_from, to_dt)
+        dvol_df = load_dvol(conn, warmup_from, to_dt)
     finally:
         conn.close()
 
-    data, dates = _build_data(candles, dvol_df)
+    data, dates = build_data(candles, dvol_df)
+
+    # Find the first row index whose date falls on or after the requested from_dt.
+    # Rows before that index are warmup-only — lookback windows reference them but
+    # the agent never acts on them.
+    from_date = from_dt.date() if isinstance(from_dt, datetime) else from_dt
+    start_idx = next(
+        (i for i, d in enumerate(dates) if d.date() >= from_date),
+        0,
+    )
+    start_idx = max(start_idx, 30)  # enforce minimum lookback window
+    logger.info("Warmup: %d rows before start_idx=%d (%s)", start_idx, start_idx, dates[start_idx].date())
 
     # ── Env config: defaults → session hyperparams → run-time overrides ───────
     hp      = session.get("hyperparams") or {}
     env_cfg = {**DEFAULT_ENV, **(hp.get("env", {})), **(env_overrides or {})}
     env_cfg["fast_margin"]    = False
-    env_cfg["episode_length"] = len(data)  # run through all available data
+    env_cfg["episode_length"] = len(data) - start_idx  # steps from start_idx to end
 
-    # ── Load model ────────────────────────────────────────────────────────────
-    model_path = str(model_row["storagePath"])
-    if not Path(model_path).exists():
-        models_dir = Path(os.environ.get("MODELS_DIR", "/app/models"))
-        alt = models_dir / Path(model_path).name
-        if alt.exists():
-            model_path = str(alt)
-        else:
-            raise ValueError(f"Model file not found: {model_path}")
+    # ── Load model with manifest validation ───────────────────────────────────
+    registry = ModelRegistry(Path(os.environ.get("MODELS_DIR", "/app/models")))
+    model, manifest = registry.load(model_row["storagePath"])
 
-    logger.info("Loading model from %s", model_path)
-    model = PPO.load(model_path)
-
-    # ── Episode: start from step 0 for deterministic backtest ─────────────────
+    # ── Episode: start from start_idx (after warmup) ──────────────────────────
     env = OptionsEnv(data, env_cfg)
     env.reset()
-    env.idx           = 0
-    env._initial_price = float(env.data[0][0])
-    env._prev_equity  = env.initial_margin_btc
+    env.idx            = start_idx
+    env._initial_price = float(env.data[start_idx][0])
+    env._prev_equity   = env.initial_margin_btc
     obs = env._obs()
 
     total_reward   = 0.0

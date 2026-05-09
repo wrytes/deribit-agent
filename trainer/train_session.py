@@ -1,213 +1,41 @@
 """
-Core training logic for a single TrainingSession.
+Orchestrate a full training run for a single TrainingSession.
 
-Called by main.py (FastAPI) with a session_id.
-Reads config + date range from the TrainingSession table in Postgres,
-assembles [btc_price, dvol, hv_30d, hv_7d] from the Candle + MarketSnapshot tables,
-trains a PPO model, evaluates on a holdout slice, saves the .zip, and
-returns a metrics dict matching the NestJS TrainingProcessor contract.
+Called by main.py (FastAPI) with a session_id. Reads config from DB, builds
+data, trains a PPO model, evaluates on a holdout slice, saves the model with
+a manifest, and returns a metrics dict for the NestJS callback.
 """
 
+import logging
 import os
 import sys
-import logging
-import numpy as np
-import pandas as pd
-import psycopg2
-import psycopg2.extras
 from pathlib import Path
+
 from stable_baselines3 import PPO
-from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.evaluation import evaluate_policy
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
+from config.defaults import DEFAULT_ENV, DEFAULT_TRAIN
+from data.loader import build_data, connect, load_candles, load_dvol, load_session
 from env.options_env import OptionsEnv
+from model.registry import ModelRegistry
 
-# Force unbuffered output so progress prints in Docker logs immediately
 sys.stdout.reconfigure(line_buffering=True)
-
 logger = logging.getLogger(__name__)
 
 MODELS_DIR = Path(os.environ.get("MODELS_DIR", "/app/models"))
-MODELS_DIR.mkdir(parents=True, exist_ok=True)
+N_ENVS     = int(os.environ.get("N_ENVS", "16"))
 
-N_ENVS = int(os.environ.get("N_ENVS", "16"))
-
-# ---------------------------------------------------------------------------
-# Defaults — overridden by session.hyperparams JSON
-# ---------------------------------------------------------------------------
-
-DEFAULT_ENV = {
-    "initial_margin_btc":     1.0,
-    "position_size_pct":      1.0,
-    "max_position_btc":       5.0,
-    "min_order_size":         0.1,   # 0.1 BTC for BTC options, 1.0 ETH for ETH options
-    "expiry_days":            7,
-    "max_margin_ratio":       0.8,
-    "risk_free_rate":         0.05,
-    "episode_length":         90,
-    "fast_margin":            True,
-    "capital_eff_bonus":      0.0001,
-    "delta_threshold":        0.30,
-    "delta_penalty_coef":     0.002,
-    "loss_multiplier":        1.20,
-    "loss_threshold":         0.02,
-    # Conditioning — randomized per episode during training
-    "randomize_conditioning": True,
-    "max_drawdown_limit":     0.20,
-    "aggression_level":       0.5,
-}
-
-DEFAULT_TRAIN = {
-    "total_timesteps": 500_000,
-    "learning_rate":   0.005,
-    "n_steps":         512,
-    "batch_size":      64,
-    "n_epochs":        10,
-    "gamma":           0.99,
-    "ent_coef":        0.02,
-}
-
-# ---------------------------------------------------------------------------
-# DB helpers
-# ---------------------------------------------------------------------------
-
-def _connect() -> psycopg2.extensions.connection:
-    url = os.environ.get("DATABASE_URL")
-    if not url:
-        raise RuntimeError("DATABASE_URL env var not set")
-    return psycopg2.connect(url)
-
-
-def _load_session(conn, session_id: str) -> dict:
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute('SELECT * FROM "TrainingSession" WHERE id = %s', (session_id,))
-        row = cur.fetchone()
-    if not row:
-        raise ValueError(f"TrainingSession {session_id!r} not found")
-    return dict(row)
-
-
-def _load_candles(conn, currency: str, data_from, data_to) -> pd.DataFrame:
-    """
-    Load 1D close prices from the Candle table.
-    Returns a DataFrame indexed by date with column 'close'.
-    """
-    instrument = f"{currency}-PERPETUAL"
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute(
-            """
-            SELECT DATE("timestamp") AS date, close::float AS close
-            FROM   "Candle"
-            WHERE  instrument = %s
-              AND  resolution  = '1D'
-              AND  "timestamp" >= %s
-              AND  "timestamp" <= %s
-            ORDER  BY "timestamp"
-            """,
-            (instrument, data_from, data_to),
-        )
-        rows = cur.fetchall()
-
-    if not rows:
-        raise ValueError(
-            f"No 1D candles found for {instrument} between {data_from} and {data_to}. "
-            "Run POST /data/candles/backfill first."
-        )
-
-    df = pd.DataFrame(rows)
-    df["date"] = pd.to_datetime(df["date"])
-    return df.set_index("date")
-
-
-def _load_dvol(conn, data_from, data_to) -> pd.DataFrame:
-    """
-    Load daily DVOL averages from MarketSnapshot.
-    Returns a DataFrame indexed by date with column 'dvol', or empty if none.
-    """
-    with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute(
-            """
-            SELECT DATE(timestamp)          AS date,
-                   AVG("dvolIndex"::float)  AS dvol
-            FROM   "MarketSnapshot"
-            WHERE  currency     = 'BTC'
-              AND  "dvolIndex"  IS NOT NULL
-              AND  timestamp   >= %s
-              AND  timestamp   <= %s
-            GROUP  BY DATE(timestamp)
-            ORDER  BY date
-            """,
-            (data_from, data_to),
-        )
-        rows = cur.fetchall()
-
-    if not rows:
-        return pd.DataFrame(columns=["dvol"])
-
-    df = pd.DataFrame(rows)
-    df["date"] = pd.to_datetime(df["date"])
-    return df.set_index("date")
-
-
-# ---------------------------------------------------------------------------
-# Data assembly
-# ---------------------------------------------------------------------------
-
-def _build_data(candles: pd.DataFrame, dvol_df: pd.DataFrame) -> np.ndarray:
-    """
-    Build the [btc_price, dvol, hv_30d, hv_7d] float32 array that OptionsEnv expects.
-
-    btc_price : daily close from Candle table
-    hv_30d    : 30-day annualised realised vol × 100 (same scale as DVOL %)
-    hv_7d     : 7-day annualised realised vol × 100 (short-term vol)
-    dvol      : MarketSnapshot.dvolIndex where available; proxy = hv_30d × 1.1 otherwise
-    """
-    df = candles.rename(columns={"close": "btc_price"}).copy()
-
-    log_ret      = np.log(df["btc_price"] / df["btc_price"].shift(1))
-    df["hv_30d"] = log_ret.rolling(30).std() * np.sqrt(365) * 100
-    df["hv_7d"]  = log_ret.rolling(7).std()  * np.sqrt(365) * 100
-
-    # DVOL: merge then fill gaps
-    if not dvol_df.empty:
-        df = df.join(dvol_df[["dvol"]], how="left")
-        df["dvol"] = df["dvol"].ffill().fillna(df["hv_30d"] * 1.1)
-    else:
-        df["dvol"] = df["hv_30d"] * 1.1
-
-    df = df.dropna(subset=["btc_price", "dvol", "hv_30d", "hv_7d"])
-
-    if len(df) < 60:
-        raise ValueError(
-            f"Only {len(df)} usable rows after HV warmup — need at least 60. "
-            "Widen the date range or run a longer backfill."
-        )
-
-    logger.info(
-        "Training data: %d days  %s → %s",
-        len(df),
-        df.index[0].date(),
-        df.index[-1].date(),
-    )
-    return df[["btc_price", "dvol", "hv_30d", "hv_7d"]].values.astype(np.float32), df.index.tolist()
-
-
-# ---------------------------------------------------------------------------
-# Training entry point
-# ---------------------------------------------------------------------------
 
 def train_session(session_id: str) -> dict:
-    """
-    Orchestrate a full training run for session_id.
-    Returns a metrics dict that the NestJS TrainingProcessor records in DB.
-    """
+    """Full training run. Returns metrics dict consumed by NestJS TrainingProcessor."""
     logger.info("Session %s — connecting to DB", session_id)
-    conn = _connect()
+    conn = connect()
     try:
-        session   = _load_session(conn, session_id)
-        candles   = _load_candles(conn, session["currency"], session["dataFrom"], session["dataTo"])
-        dvol_df   = _load_dvol(conn, session["dataFrom"], session["dataTo"])
+        session = load_session(conn, session_id)
+        candles = load_candles(conn, session["currency"], session["dataFrom"], session["dataTo"])
+        dvol_df = load_dvol(conn, session["dataFrom"], session["dataTo"])
     finally:
         conn.close()
 
@@ -217,19 +45,19 @@ def train_session(session_id: str) -> dict:
         session["dataFrom"], session["dataTo"], session["algorithm"],
     )
 
-    # --- Merge defaults with session hyperparams ---
-    hp = session.get("hyperparams") or {}
+    hp        = session.get("hyperparams") or {}
     env_cfg   = {**DEFAULT_ENV,   **(hp.get("env", {}))}
     train_cfg = {**DEFAULT_TRAIN, **(hp.get("training", {}))}
-    # Allow flat overrides at top level too (e.g. {"total_timesteps": 500000})
     for k in DEFAULT_TRAIN:
         if k in hp:
             train_cfg[k] = hp[k]
 
+    algorithm = session.get("algorithm", "PPO")
+    policy    = str(train_cfg.pop("policy", "MlpPolicy"))
+
     total_timesteps = int(train_cfg["total_timesteps"])
 
-    # --- Build data and split 80 / 20 ---
-    data, _ = _build_data(candles, dvol_df)
+    data, _ = build_data(candles, dvol_df)
     split      = int(len(data) * 0.8)
     train_data = data[:split]
     eval_data  = data[split:]
@@ -239,20 +67,15 @@ def train_session(session_id: str) -> dict:
 
     logger.info("Split: %d train / %d eval rows", len(train_data), len(eval_data))
 
-    # --- Paths ---
-    model_name     = f"{session_id}_ppo"
-    model_path     = MODELS_DIR / model_name
     checkpoint_dir = MODELS_DIR / "checkpoints" / session_id
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    # --- PPO ---
-    def _make_env(data, cfg):
-        return lambda: OptionsEnv(data, cfg)
-
-    vec_env = SubprocVecEnv([_make_env(train_data, env_cfg) for _ in range(N_ENVS)])
+    vec_env = SubprocVecEnv(
+        [lambda d=train_data, c=env_cfg: OptionsEnv(d, c) for _ in range(N_ENVS)]
+    )
 
     model = PPO(
-        "MlpPolicy",
+        policy,
         vec_env,
         learning_rate = float(train_cfg["learning_rate"]),
         n_steps       = int(train_cfg["n_steps"]),
@@ -277,16 +100,13 @@ def train_session(session_id: str) -> dict:
         verbose     = 1,
     )
 
-    logger.info("Training PPO for %d timesteps …", total_timesteps)
+    logger.info("Training %s/%s for %d timesteps …", algorithm, policy, total_timesteps)
     model.learn(total_timesteps=total_timesteps, callback=checkpoint_cb)
 
-    # --- Save ---
-    model.save(str(model_path))
-    saved_zip  = f"{model_path}.zip"
-    size_bytes = Path(saved_zip).stat().st_size if Path(saved_zip).exists() else 0
-    logger.info("Saved model → %s  (%d bytes)", saved_zip, size_bytes)
+    registry = ModelRegistry(MODELS_DIR)
+    zip_path, manifest = registry.save(model, session_id, algorithm=algorithm, policy=policy)
+    size_bytes = zip_path.stat().st_size if zip_path.exists() else 0
 
-    # --- Evaluate on holdout ---
     mean_reward, std_reward = 0.0, 0.0
     if len(eval_data) >= 60:
         eval_env = DummyVecEnv([lambda: OptionsEnv(eval_data, env_cfg)])
@@ -298,8 +118,8 @@ def train_session(session_id: str) -> dict:
     return {
         "total_timesteps": total_timesteps,
         "final_reward":    float(mean_reward),
-        "model_path":      saved_zip,
-        "model_name":      model_name,
+        "model_path":      str(zip_path),
+        "model_name":      f"{session_id}_ppo",
         "size_bytes":      size_bytes,
         "mean_reward":     float(mean_reward),
         "std_reward":      float(std_reward),

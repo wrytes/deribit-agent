@@ -3,6 +3,7 @@ import gymnasium as gym
 from gymnasium import spaces
 from collections import deque
 from env.black_scholes import price as bs_price, price_vec as bs_price_vec, delta as bs_delta, strike_from_delta
+from config.defaults import OBS_FEATURES, OBS_VERSION  # noqa: F401 — re-exported for registry
 
 # action_id → None | "close" | {"close_pct": float}
 #            | {"call_delta": float}
@@ -132,7 +133,7 @@ class OptionsEnv(gym.Env):
 
         self.action_space      = spaces.Discrete(len(ACTION_DEFS))
         self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(35,), dtype=np.float32
+            low=-np.inf, high=np.inf, shape=(len(OBS_FEATURES),), dtype=np.float32
         )
 
         self._pm_iv_shocks = np.array([0.0]) if config.get("fast_margin", True) else _PM_IV_SHOCKS
@@ -400,8 +401,11 @@ class OptionsEnv(gym.Env):
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
+        # Minimum start of 30 so all rolling lookbacks (ret_30d, dvol_change_30d, etc.)
+        # have real prior data rather than clamping to row 0.
+        _WARMUP = 30
         max_start = len(self.data) - self.episode_length - self.expiry_days - 2
-        self.idx            = int(self.np_random.integers(0, max(1, max_start)))
+        self.idx            = int(self.np_random.integers(_WARMUP, max(_WARMUP + 1, max_start)))
         self._initial_price = float(self._row()[0])
         self.margin_balance = self.initial_margin_btc
         self.call_pos       = None
