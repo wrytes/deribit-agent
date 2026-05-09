@@ -41,7 +41,7 @@ _ACTION_TYPE: dict[int, str] = {
     8:  "sell_put",  9:  "sell_put",  10: "sell_put",
     11: "sell_put",  12: "sell_put",
     13: "sell_strangle", 14: "sell_strangle", 15: "sell_strangle",
-    16: "close", 17: "close", 18: "close", 19: "close", 20: "close",
+    16: "close", 17: "close", 18: "close", 19: "close", 20: "close", 21: "close",
 }
 
 

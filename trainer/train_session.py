@@ -3,7 +3,7 @@ Core training logic for a single TrainingSession.
 
 Called by main.py (FastAPI) with a session_id.
 Reads config + date range from the TrainingSession table in Postgres,
-assembles [btc_price, dvol, hv] from the Candle + MarketSnapshot tables,
+assembles [btc_price, dvol, hv_30d, hv_7d] from the Candle + MarketSnapshot tables,
 trains a PPO model, evaluates on a holdout slice, saves the .zip, and
 returns a metrics dict matching the NestJS TrainingProcessor contract.
 """
@@ -38,20 +38,24 @@ N_ENVS = int(os.environ.get("N_ENVS", "16"))
 # ---------------------------------------------------------------------------
 
 DEFAULT_ENV = {
-    "initial_margin_btc": 1.0,
-    "position_size_pct":  1.0,
-    "max_position_btc":   5.0,
-    "min_order_size":     0.1,   # 0.1 BTC for BTC options, 1.0 ETH for ETH options
-    "expiry_days":        7,
-    "max_margin_ratio":   0.8,
-    "risk_free_rate":     0.05,
-    "episode_length":     90,
-    "fast_margin":        True,
-    "capital_eff_bonus":  0.0001,
-    "delta_threshold":    0.30,
-    "delta_penalty_coef": 0.002,
-    "loss_multiplier":    1.20,
-    "loss_threshold":     0.02,
+    "initial_margin_btc":     1.0,
+    "position_size_pct":      1.0,
+    "max_position_btc":       5.0,
+    "min_order_size":         0.1,   # 0.1 BTC for BTC options, 1.0 ETH for ETH options
+    "expiry_days":            7,
+    "max_margin_ratio":       0.8,
+    "risk_free_rate":         0.05,
+    "episode_length":         90,
+    "fast_margin":            True,
+    "capital_eff_bonus":      0.0001,
+    "delta_threshold":        0.30,
+    "delta_penalty_coef":     0.002,
+    "loss_multiplier":        1.20,
+    "loss_threshold":         0.02,
+    # Conditioning — randomized per episode during training
+    "randomize_conditioning": True,
+    "max_drawdown_limit":     0.20,
+    "aggression_level":       0.5,
 }
 
 DEFAULT_TRAIN = {
@@ -152,26 +156,27 @@ def _load_dvol(conn, data_from, data_to) -> pd.DataFrame:
 
 def _build_data(candles: pd.DataFrame, dvol_df: pd.DataFrame) -> np.ndarray:
     """
-    Build the [btc_price, dvol, hv] float32 array that OptionsEnv expects.
+    Build the [btc_price, dvol, hv_30d, hv_7d] float32 array that OptionsEnv expects.
 
     btc_price : daily close from Candle table
-    hv        : 30-day annualised realised vol × 100 (same scale as DVOL %)
-    dvol      : MarketSnapshot.dvolIndex where available; proxy = hv × 1.1 otherwise
+    hv_30d    : 30-day annualised realised vol × 100 (same scale as DVOL %)
+    hv_7d     : 7-day annualised realised vol × 100 (short-term vol)
+    dvol      : MarketSnapshot.dvolIndex where available; proxy = hv_30d × 1.1 otherwise
     """
     df = candles.rename(columns={"close": "btc_price"}).copy()
 
-    # 30-day HV (annualised, expressed as %)
-    log_ret  = np.log(df["btc_price"] / df["btc_price"].shift(1))
-    df["hv"] = log_ret.rolling(30).std() * np.sqrt(365) * 100
+    log_ret      = np.log(df["btc_price"] / df["btc_price"].shift(1))
+    df["hv_30d"] = log_ret.rolling(30).std() * np.sqrt(365) * 100
+    df["hv_7d"]  = log_ret.rolling(7).std()  * np.sqrt(365) * 100
 
     # DVOL: merge then fill gaps
     if not dvol_df.empty:
         df = df.join(dvol_df[["dvol"]], how="left")
-        df["dvol"] = df["dvol"].ffill().fillna(df["hv"] * 1.1)
+        df["dvol"] = df["dvol"].ffill().fillna(df["hv_30d"] * 1.1)
     else:
-        df["dvol"] = df["hv"] * 1.1   # vol-premium proxy when no snapshot data
+        df["dvol"] = df["hv_30d"] * 1.1
 
-    df = df.dropna(subset=["btc_price", "dvol", "hv"])
+    df = df.dropna(subset=["btc_price", "dvol", "hv_30d", "hv_7d"])
 
     if len(df) < 60:
         raise ValueError(
@@ -185,7 +190,7 @@ def _build_data(candles: pd.DataFrame, dvol_df: pd.DataFrame) -> np.ndarray:
         df.index[0].date(),
         df.index[-1].date(),
     )
-    return df[["btc_price", "dvol", "hv"]].values.astype(np.float32), df.index.tolist()
+    return df[["btc_price", "dvol", "hv_30d", "hv_7d"]].values.astype(np.float32), df.index.tolist()
 
 
 # ---------------------------------------------------------------------------

@@ -4,14 +4,13 @@ from gymnasium import spaces
 from collections import deque
 from env.black_scholes import price as bs_price, price_vec as bs_price_vec, delta as bs_delta, strike_from_delta
 
-# action_id -> None | "close" | {"close_pct": float}
+# action_id → None | "close" | {"close_pct": float}
 #            | {"call_delta": float}
 #            | {"put_delta":  float}
 #            | {"call_delta": float, "put_delta": float}
 #
-# Strikes are computed dynamically from target delta each day:
+# Strikes computed dynamically from target delta each day:
 #   K = strike_from_delta(S, T, r, sigma, target_delta, option_type)
-#   Rounded to nearest $1,000.
 #
 # Call delta: 0.50 = ATM, <0.50 = OTM, >0.50 = ITM
 # Put  delta: -0.50 = ATM, >-0.50 = OTM (less negative), <-0.50 = ITM
@@ -25,37 +24,35 @@ ACTION_DEFS = {
     4:  {"call_delta": 0.20},                              # OTM  Δ20
     5:  {"call_delta": 0.60},                              # ITM  Δ60
     6:  {"call_delta": 0.70},                              # ITM  Δ70
-    7:  {"call_delta": 0.80},                              # ITM  Δ80 (deep ITM / covered call)
+    7:  {"call_delta": 0.80},                              # ITM  Δ80
     # --- short puts by delta ---
     8:  {"put_delta": -0.50},                              # ATM
     9:  {"put_delta": -0.40},                              # OTM  Δ40
     10: {"put_delta": -0.30},                              # OTM  Δ30
     11: {"put_delta": -0.20},                              # OTM  Δ20
-    12: {"put_delta": -0.10},                              # OTM  Δ10 (far OTM / lottery put)
-    # --- short strangles ---
-    13: {"call_delta": 0.40, "put_delta": -0.40},          # Δ40 strangle
-    14: {"call_delta": 0.30, "put_delta": -0.30},          # Δ30 strangle
-    15: {"call_delta": 0.20, "put_delta": -0.20},          # Δ20 strangle
+    12: {"put_delta": -0.10},                              # OTM  Δ10 (far OTM)
+    # --- short strangles (both legs in one action) ---
+    13: {"call_delta": 0.40, "put_delta": -0.40},
+    14: {"call_delta": 0.30, "put_delta": -0.30},
+    15: {"call_delta": 0.20, "put_delta": -0.20},
     # --- close actions ---
     16: "close",
-    17: {"close_pct": 0.50},
-    18: {"close_pct": 0.60},
-    19: {"close_pct": 0.80},
-    20: {"close_pct": 0.90},
+    17: {"close_pct": 0.25},
+    18: {"close_pct": 0.50},
+    19: {"close_pct": 0.60},
+    20: {"close_pct": 0.70},
+    21: {"close_pct": 0.80},
 }
 
 TRADE_FEE = 0.002  # 0.2% of premium on open/close; 0% on expiry settlement
 
-# Strategy → sell action ID mapping (hold=0, close=16–20 always valid)
-_STRATEGY_ORDER = ["strangle", "straddle", "covered_call", "cash_secured_put", "delta_neutral", "iron_condor"]
+# Strategy → sell action ID mapping (hold=0, close=16–21 always valid)
+_STRATEGY_ORDER = ["short_call", "short_put", "delta_neutral"]
 
 _STRATEGY_ACTION_MAP: dict[str, frozenset[int]] = {
-    "strangle":         frozenset({13, 14, 15}),
-    "straddle":         frozenset({1, 8}),              # ATM call + ATM put
-    "covered_call":     frozenset({1, 2, 3, 4, 5, 6, 7}),
-    "cash_secured_put": frozenset({8, 9, 10, 11, 12}),
-    "delta_neutral":    frozenset({13, 14, 15}),        # strangles are delta-balanced
-    "iron_condor":      frozenset({13, 14, 15}),        # wing-buy not in action space; strangle proxy
+    "short_call":    frozenset({1, 2, 3, 4, 5, 6, 7}),
+    "short_put":     frozenset({8, 9, 10, 11, 12}),
+    "delta_neutral": frozenset({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}),
 }
 
 _ALL_SELL_ACTIONS = frozenset(range(1, 16))  # action IDs 1–15
@@ -65,6 +62,9 @@ _PM_PRICE_SHOCKS   = np.array([-0.16, -0.12, -0.08, -0.04, 0.0, 0.04, 0.08, 0.12
 _PM_PRICE_EXTENDED = np.array([-0.66, -0.33, 0.50, 1.00, 2.00, 3.00, 4.00, 5.00])
 _PM_ALL_SHOCKS     = np.concatenate([_PM_PRICE_SHOCKS, _PM_PRICE_EXTENDED])
 _PM_IV_SHOCKS      = np.array([-0.25, 0.0, 0.25])
+
+# Equity history depth — covers all observation lookbacks (30d) + reward lookback (expiry_days ≤ 30)
+_EQUITY_HISTORY_LEN = 31
 
 
 class OptionsEnv(gym.Env):
@@ -83,17 +83,27 @@ class OptionsEnv(gym.Env):
       expire OTM      nothing (premium already in margin_balance)
       expire ITM      margin_balance -= max(S_T−K, 0)/S_T × size
 
-    Observation (27 floats):
-      btc_price_norm, ret_1d, dvol_norm, hv_norm, vol_premium, dvol_change,
-      episode_progress, has_call, has_put, dte_norm,
-      call_moneyness, put_moneyness, call_delta, put_delta,
+    Data columns: [btc_price, dvol, hv_30d, hv_7d]
+
+    Observation (35 floats):
+      --- Market state (5) ---
+      btc_price_norm, dvol_norm, hv_7d_norm, hv_30d_norm, vol_premium
+      --- Rolling metrics (6) ---
+      ret_1d, ret_7d, ret_30d, dvol_change_1d, dvol_change_7d, dvol_change_30d
+      --- Call position (6) ---
+      has_call, call_dte_norm, call_moneyness, call_delta, call_size_norm, call_pnl_pct
+      --- Put position (6) ---
+      has_put, put_dte_norm, put_moneyness, put_delta, put_size_norm, put_pnl_pct
+      --- Portfolio risk (7) ---
       unrealized_btc_norm, margin_balance_norm, margin_ratio,
-      equity_drawdown, btc_price_norm_7d, ret_7d, equity_drawdown_7d,
-      mask_strangle, mask_straddle, mask_covered_call,
-      mask_cash_secured_put, mask_delta_neutral, mask_iron_condor
+      equity_dd_1d, equity_dd_7d, equity_dd_30d, equity_dd_peak
+      --- Strategy masks (3) ---
+      mask_short_call, mask_short_put, mask_delta_neutral
+      --- Conditioning inputs (2) ---
+      max_drawdown_limit, aggression_level
 
     Reward: Δequity_btc / initial_margin_btc per step.
-    Termination: equity_btc drops below 50% of initial_margin_btc.
+    Termination: equity drawdown from peak exceeds max_drawdown_limit.
     """
 
     metadata = {"render_modes": []}
@@ -113,40 +123,43 @@ class OptionsEnv(gym.Env):
         self.delta_penalty_coef = float(config.get("delta_penalty_coef", 0.002))
         self.loss_multiplier    = float(config.get("loss_multiplier", 1.0))
         self.loss_threshold     = float(config.get("loss_threshold", 0.01))
-        # Minimum order size per leg (0.1 BTC for BTC options, 1.0 ETH for ETH options)
         self.min_order_size     = float(config.get("min_order_size", 0.1))
-        self._equity_history    = deque(maxlen=self.expiry_days)  # rolling weekly window
+
+        # Conditioning — randomized per episode during training, fixed at inference
+        self._randomize_conditioning = bool(config.get("randomize_conditioning", False))
+        self.max_drawdown_limit = float(config.get("max_drawdown_limit", 0.20))
+        self.aggression_level   = float(config.get("aggression_level", 0.5))
 
         self.action_space      = spaces.Discrete(len(ACTION_DEFS))
         self.observation_space = spaces.Box(
-            low=-np.inf, high=np.inf, shape=(27,), dtype=np.float32
+            low=-np.inf, high=np.inf, shape=(35,), dtype=np.float32
         )
 
-        # fast_margin=True skips IV shocks (17 scenarios vs 51) — use for training
-        self._pm_iv_shocks   = np.array([0.0]) if config.get("fast_margin", True) else _PM_IV_SHOCKS
+        self._pm_iv_shocks = np.array([0.0]) if config.get("fast_margin", True) else _PM_IV_SHOCKS
 
-        # Action masking from allowed_actions config; empty list = all sell actions valid
+        # Action masking from allowed_actions config; empty = all sell actions valid
         _allowed = config.get("allowed_actions", [])
         if _allowed:
             self._valid_sell_actions = frozenset().union(*(_STRATEGY_ACTION_MAP.get(s, frozenset()) for s in _allowed))
         else:
             self._valid_sell_actions = _ALL_SELL_ACTIONS
 
-        # 6-float strategy mask baked into every observation (static per session)
         self._allowed_mask = np.array(
             [1.0 if (not _allowed or s in _allowed) else 0.0 for s in _STRATEGY_ORDER],
             dtype=np.float32,
         )
 
-        self.margin_balance  = self.initial_margin_btc
-        self.call_pos        = None
-        self.put_pos         = None
-        self.idx             = 0
-        self.step_count      = 0
-        self._initial_price  = 1.0
-        self._prev_equity    = self.initial_margin_btc
-        self._peak_equity    = self.initial_margin_btc   # high-water mark for drawdown obs
-        self._cached_margin  = 0.0   # updated once per step, reused in _obs()
+        self._equity_history = deque(maxlen=_EQUITY_HISTORY_LEN)
+
+        self.margin_balance = self.initial_margin_btc
+        self.call_pos       = None
+        self.put_pos        = None
+        self.idx            = 0
+        self.step_count     = 0
+        self._initial_price = 1.0
+        self._prev_equity   = self.initial_margin_btc
+        self._peak_equity   = self.initial_margin_btc
+        self._cached_margin = 0.0
 
     # ------------------------------------------------------------------
     # Helpers
@@ -159,30 +172,29 @@ class OptionsEnv(gym.Env):
         return max(dvol / 100.0, 1e-6)
 
     def _position_size(self):
-        """Fractional Kelly sizing rounded down to min_order_size increments."""
-        raw = min(self.margin_balance * self.position_size_pct, self.max_position_btc)
-        # Floor to nearest increment (e.g. 0.1 BTC or 1 ETH) — returns 0.0 if below minimum
+        """Kelly sizing scaled by aggression_level (0.3×–1.0× of configured pct)."""
+        scale = 0.3 + 0.7 * self.aggression_level
+        raw = min(self.margin_balance * self.position_size_pct * scale, self.max_position_btc)
         increments = int(raw / self.min_order_size)
         return increments * self.min_order_size
 
+    def _equity_n_days_ago(self, n: int) -> float:
+        """Return equity n days ago from history. hist[-1] = today (just appended)."""
+        idx = n + 1
+        return float(self._equity_history[-idx]) if len(self._equity_history) >= idx else self.initial_margin_btc
+
     def _is_covered_call(self):
-        """True when margin_balance ≥ call position size — can't blow up."""
         if self.call_pos is None:
             return False
         return self.margin_balance >= self.call_pos["size"]
 
     def _recursive_size(self, S, sigma, K, option_type):
-        """USD-neutral sizing: margin_balance / (1 − prem_btc). See docs/covered-call-math.md."""
         T        = self.expiry_days / 365.0
         prem_btc = bs_price(S, K, T, self.r, sigma, option_type) / S
         denom    = max(1.0 - prem_btc, 0.01)
         return min(self.margin_balance / denom, self.max_position_btc)
 
     def _unrealized_btc(self, S, dvol):
-        """
-        Current option liability in BTC (always <= 0 for short positions).
-        equity_btc = margin_balance + unrealized_btc
-        """
         sigma = self._sigma(dvol)
         lib   = 0.0
         for pos in (self.call_pos, self.put_pos):
@@ -199,11 +211,7 @@ class OptionsEnv(gym.Env):
     def _portfolio_margin_usd(self, S, sigma, extra_positions=None):
         """
         Deribit-style portfolio margin in USD: worst-case scenario P&L.
-        extra_positions: list of (pos_dict, opt_type) to include prospectively.
-        Extended scenarios (+100% to +500%) are skipped for short-dated options
-        (expiry_days <= 30) since such moves are impossible in days/weeks.
-        Vectorised: all (N_price × N_iv) shock combinations evaluated in one
-        NumPy pass per position instead of a triple Python loop.
+        Vectorised: all (N_price × N_iv) shock combinations in one NumPy pass per position.
         """
         positions = [(p, p["type"]) for p in (self.call_pos, self.put_pos) if p is not None]
         if extra_positions:
@@ -212,36 +220,33 @@ class OptionsEnv(gym.Env):
             return 0.0
         shocks = _PM_PRICE_SHOCKS if self.expiry_days <= 30 else _PM_ALL_SHOCKS
 
-        # Shocked grids — broadcast to (N_price, N_iv) without allocating full mesh
-        S_grid = (S * (1.0 + shocks))[:, None]                                   # (N_price, 1)
-        v_grid = np.maximum(sigma * (1.0 + self._pm_iv_shocks), 0.01)[None, :]   # (1, N_iv)
+        S_grid = (S * (1.0 + shocks))[:, None]
+        v_grid = np.maximum(sigma * (1.0 + self._pm_iv_shocks), 0.01)[None, :]
 
         pnl = np.zeros((len(shocks), len(self._pm_iv_shocks)))
         for pos, opt_type in positions:
             K, T, size = pos["strike"], pos["dte"] / 365.0, pos["size"]
-            baseline  = bs_price(S, K, T, self.r, sigma, opt_type)            # scalar
-            stressed  = bs_price_vec(S_grid, K, T, self.r, v_grid, opt_type)  # (N_price, N_iv)
+            baseline  = bs_price(S, K, T, self.r, sigma, opt_type)
+            stressed  = bs_price_vec(S_grid, K, T, self.r, v_grid, opt_type)
             pnl      -= (stressed - baseline) * size
 
         return float(max(0.0, -pnl.min()))
 
     def _sell_leg(self, S, sigma, strike, option_type):
-        """Sell one leg. Returns (position_dict, btc_received)."""
         size     = self._position_size()
         T        = self.expiry_days / 365.0
         prem_usd = bs_price(S, strike, T, self.r, sigma, option_type)
-        prem_btc = prem_usd / S          # convert to BTC at current price
+        prem_btc = prem_usd / S
         fee_btc  = prem_btc * size * TRADE_FEE
         return {
-            "strike":         strike,
-            "prem_btc_unit":  prem_btc,  # premium per BTC of face value, at open time
-            "size":           size,
-            "dte":            self.expiry_days,
-            "type":           option_type,
+            "strike":        strike,
+            "prem_btc_unit": prem_btc,
+            "size":          size,
+            "dte":           self.expiry_days,
+            "type":          option_type,
         }, prem_btc * size - fee_btc
 
     def _close_leg(self, attr, S, sigma):
-        """Buy back one leg. Returns btc_delta (negative = cost paid)."""
         pos = getattr(self, attr)
         if pos is None:
             return 0.0
@@ -257,7 +262,7 @@ class OptionsEnv(gym.Env):
                 + self._close_leg("put_pos",  S, sigma))
 
     def _close_at_profit(self, S, sigma, target_pct):
-        """Close legs where (prem_btc − current_btc) / prem_btc >= target_pct."""
+        """Close each leg independently where profit capture >= target_pct."""
         btc_delta = 0.0
         for attr in ("call_pos", "put_pos"):
             pos = getattr(self, attr)
@@ -271,10 +276,7 @@ class OptionsEnv(gym.Env):
         return btc_delta
 
     def _settle_expired(self, S):
-        """
-        Deribit BTC settlement: intrinsic paid in BTC = max(S_T−K, 0) / S_T × size.
-        No fee on expiry.
-        """
+        """Deribit BTC settlement: intrinsic paid in BTC = max(S_T−K, 0) / S_T × size."""
         btc_delta = 0.0
         for attr in ("call_pos", "put_pos"):
             pos = getattr(self, attr)
@@ -289,66 +291,107 @@ class OptionsEnv(gym.Env):
         return btc_delta
 
     def _obs(self):
-        S, dvol, hv = self._row()
-        sigma  = self._sigma(dvol)
-        prev_S    = float(self._row(max(0, self.idx - 1))[0])
-        prev_dvol = float(self._row(max(0, self.idx - 1))[1])
-        ret_1d    = (S - prev_S) / prev_S if prev_S > 0 else 0.0
+        S, dvol, hv_30d, hv_7d = self._row()
+        sigma = self._sigma(dvol)
 
-        unreal_btc  = self._unrealized_btc(S, dvol)
-        margin_usd  = self._cached_margin          # computed once per step in step()
-        margin_val  = self.margin_balance * S
-        equity_btc  = self.margin_balance + unreal_btc
+        # Lookback rows
+        prev_row = self._row(max(0, self.idx - 1))
+        row_7d   = self._row(max(0, self.idx - 7))
+        row_30d  = self._row(max(0, self.idx - 30))
 
-        has_call = float(self.call_pos is not None)
-        has_put  = float(self.put_pos  is not None)
-        min_dte  = min(
-            self.call_pos["dte"] if self.call_pos else self.expiry_days,
-            self.put_pos["dte"]  if self.put_pos  else self.expiry_days,
-        )
+        prev_S    = float(prev_row[0]);  prev_dvol = float(prev_row[1])
+        S_7d      = float(row_7d[0]);   dvol_7d   = float(row_7d[1])
+        S_30d     = float(row_30d[0]);  dvol_30d  = float(row_30d[1])
 
-        call_mono  = (self.call_pos["strike"] / S - 1.0) if self.call_pos else 0.0
-        put_mono   = (self.put_pos["strike"]  / S - 1.0) if self.put_pos  else 0.0
-        call_T     = (self.call_pos["dte"] / 365.0) if self.call_pos else 0.0
-        put_T      = (self.put_pos["dte"]  / 365.0) if self.put_pos  else 0.0
-        call_delta = bs_delta(S, self.call_pos["strike"], call_T, self.r, sigma, "call") if self.call_pos else 0.0
-        put_delta  = bs_delta(S, self.put_pos["strike"],  put_T,  self.r, sigma, "put")  if self.put_pos  else 0.0
+        ret_1d  = (S - prev_S) / prev_S   if prev_S  > 0 else 0.0
+        ret_7d  = (S - S_7d)   / S_7d     if S_7d    > 0 else 0.0
+        ret_30d = (S - S_30d)  / S_30d    if S_30d   > 0 else 0.0
 
-        # Rolling signals
-        dvol_change     = (dvol - prev_dvol) / 100.0
-        equity_drawdown = (equity_btc - self._peak_equity) / self.initial_margin_btc
+        dvol_change_1d  = (dvol - prev_dvol) / 100.0
+        dvol_change_7d  = (dvol - dvol_7d)   / 100.0
+        dvol_change_30d = (dvol - dvol_30d)  / 100.0
 
-        S_7d         = float(self._row(max(0, self.idx - 7))[0])
-        btc_norm_7d  = S / S_7d if S_7d > 0 else 1.0
-        ret_7d       = (S - S_7d) / S_7d if S_7d > 0 else 0.0
-        eq_7d_ago    = (self._equity_history[0]
-                        if len(self._equity_history) == self._equity_history.maxlen
-                        else self.initial_margin_btc)
-        equity_dd_7d = (equity_btc - eq_7d_ago) / self.initial_margin_btc
+        unreal_btc = self._unrealized_btc(S, dvol)
+        margin_usd = self._cached_margin
+        margin_val = self.margin_balance * S
+        equity_btc = self.margin_balance + unreal_btc
+
+        # Call position features
+        if self.call_pos:
+            call_T         = self.call_pos["dte"] / 365.0
+            current_call   = bs_price(S, self.call_pos["strike"], call_T, self.r, sigma, "call") / S
+            has_call       = 1.0
+            call_dte_norm  = self.call_pos["dte"] / self.expiry_days
+            call_mono      = self.call_pos["strike"] / S - 1.0
+            call_d         = bs_delta(S, self.call_pos["strike"], call_T, self.r, sigma, "call")
+            call_size_norm = self.call_pos["size"] / self.initial_margin_btc
+            call_pnl_pct   = (self.call_pos["prem_btc_unit"] - current_call) / max(self.call_pos["prem_btc_unit"], 1e-8)
+        else:
+            has_call = call_dte_norm = call_mono = call_d = call_size_norm = call_pnl_pct = 0.0
+
+        # Put position features
+        if self.put_pos:
+            put_T         = self.put_pos["dte"] / 365.0
+            current_put   = bs_price(S, self.put_pos["strike"], put_T, self.r, sigma, "put") / S
+            has_put       = 1.0
+            put_dte_norm  = self.put_pos["dte"] / self.expiry_days
+            put_mono      = self.put_pos["strike"] / S - 1.0
+            put_d         = bs_delta(S, self.put_pos["strike"], put_T, self.r, sigma, "put")
+            put_size_norm = self.put_pos["size"] / self.initial_margin_btc
+            put_pnl_pct   = (self.put_pos["prem_btc_unit"] - current_put) / max(self.put_pos["prem_btc_unit"], 1e-8)
+        else:
+            has_put = put_dte_norm = put_mono = put_d = put_size_norm = put_pnl_pct = 0.0
+
+        # Portfolio risk — equity drawdowns (hist[-1] = today, already appended in step)
+        equity_dd_peak = (equity_btc - self._peak_equity) / self.initial_margin_btc
+        eq_1d_ago      = self._equity_n_days_ago(1)
+        eq_7d_ago      = self._equity_n_days_ago(7)
+        eq_30d_ago     = self._equity_n_days_ago(30)
+        equity_dd_1d   = (equity_btc - eq_1d_ago)  / self.initial_margin_btc
+        equity_dd_7d   = (equity_btc - eq_7d_ago)  / self.initial_margin_btc
+        equity_dd_30d  = (equity_btc - eq_30d_ago) / self.initial_margin_btc
 
         return np.array([
-            S / self._initial_price,                               # 0  btc_price_norm
-            ret_1d,                                                # 1  ret_1d
-            dvol / 100.0,                                          # 2  dvol_norm
-            hv   / 100.0,                                          # 3  hv_norm
-            (dvol - hv) / 100.0,                                   # 4  vol_premium
-            dvol_change,                                           # 5  dvol_change
-            self.step_count / self.episode_length,                 # 6  episode_progress
-            has_call,                                              # 7  has_call
-            has_put,                                               # 8  has_put
-            min_dte / self.expiry_days,                            # 9  dte_norm
-            call_mono,                                             # 10 call_moneyness
-            put_mono,                                              # 11 put_moneyness
-            call_delta,                                            # 12 call_delta
-            put_delta,                                             # 13 put_delta
-            unreal_btc / self.initial_margin_btc,                  # 14 unrealized_btc_norm
-            self.margin_balance / self.initial_margin_btc,         # 15 margin_balance_norm
-            margin_usd / max(margin_val, 1.0),                     # 16 margin_ratio
-            equity_drawdown,                                       # 17 equity_drawdown
-            btc_norm_7d,                                           # 18 btc_price_norm_7d
-            ret_7d,                                                # 19 ret_7d
-            equity_dd_7d,                                          # 20 equity_drawdown_7d
-            *self._allowed_mask,                                   # 21–26 strategy mask ×6
+            # Market state (5)
+            S / self._initial_price,           # 0  btc_price_norm
+            dvol   / 100.0,                    # 1  dvol_norm
+            hv_7d  / 100.0,                    # 2  hv_7d_norm
+            hv_30d / 100.0,                    # 3  hv_30d_norm
+            (dvol - hv_30d) / 100.0,           # 4  vol_premium
+            # Rolling metrics (6)
+            ret_1d,                            # 5  ret_1d
+            ret_7d,                            # 6  ret_7d
+            ret_30d,                           # 7  ret_30d
+            dvol_change_1d,                    # 8  dvol_change_1d
+            dvol_change_7d,                    # 9  dvol_change_7d
+            dvol_change_30d,                   # 10 dvol_change_30d
+            # Call position (6)
+            has_call,                          # 11 has_call
+            call_dte_norm,                     # 12 call_dte_norm
+            call_mono,                         # 13 call_moneyness
+            call_d,                            # 14 call_delta
+            call_size_norm,                    # 15 call_size_norm
+            call_pnl_pct,                      # 16 call_pnl_pct
+            # Put position (6)
+            has_put,                           # 17 has_put
+            put_dte_norm,                      # 18 put_dte_norm
+            put_mono,                          # 19 put_moneyness
+            put_d,                             # 20 put_delta
+            put_size_norm,                     # 21 put_size_norm
+            put_pnl_pct,                       # 22 put_pnl_pct
+            # Portfolio risk (7)
+            unreal_btc / self.initial_margin_btc,          # 23 unrealized_btc_norm
+            self.margin_balance / self.initial_margin_btc, # 24 margin_balance_norm
+            margin_usd / max(margin_val, 1.0),             # 25 margin_ratio
+            equity_dd_1d,                                  # 26 equity_dd_1d
+            equity_dd_7d,                                  # 27 equity_dd_7d
+            equity_dd_30d,                                 # 28 equity_dd_30d
+            equity_dd_peak,                                # 29 equity_dd_peak
+            # Strategy masks (3)
+            *self._allowed_mask,                           # 30–32
+            # Conditioning inputs (2)
+            self.max_drawdown_limit,                       # 33
+            self.aggression_level,                         # 34
         ], dtype=np.float32)
 
     # ------------------------------------------------------------------
@@ -366,26 +409,37 @@ class OptionsEnv(gym.Env):
         self.step_count     = 0
         self._prev_equity   = self.initial_margin_btc
         self._peak_equity   = self.initial_margin_btc
+        self._cached_margin = 0.0
         self._equity_history.clear()
         self._equity_history.append(self.initial_margin_btc)
+
+        if self._randomize_conditioning:
+            # Randomise strategy mask — at least one strategy must be enabled
+            while True:
+                flags = [self.np_random.random() > 0.3 for _ in _STRATEGY_ORDER]
+                if any(flags):
+                    break
+            enabled = [s for s, f in zip(_STRATEGY_ORDER, flags) if f]
+            self._valid_sell_actions = frozenset().union(*(_STRATEGY_ACTION_MAP[s] for s in enabled))
+            self._allowed_mask       = np.array(flags, dtype=np.float32)
+            self.max_drawdown_limit  = float(self.np_random.uniform(0.05, 0.50))
+            self.aggression_level    = float(self.np_random.uniform(0.0,  1.0))
+
         return self._obs(), {}
 
     def step(self, action: int):
-        S, dvol, _ = self._row()
-        sigma       = self._sigma(dvol)
+        S, dvol, _, _ = self._row()
+        sigma          = self._sigma(dvol)
 
-        # ── 1. Tick DTE and settle any expirations at today's price ──────────
-        # Done BEFORE the action so the agent trades on a clean slate:
-        # if a position expires today, margin is freed before the new order.
+        # ── 1. Tick DTE and settle expirations ───────────────────────────────
         if self.call_pos: self.call_pos["dte"] -= 1
         if self.put_pos:  self.put_pos["dte"]  -= 1
         self.margin_balance += self._settle_expired(S)
 
-        # ── 2. Compute margin (expired options already removed) ───────────────
+        # ── 2. Compute margin ─────────────────────────────────────────────────
         self._cached_margin = self._portfolio_margin_usd(S, sigma)
 
-        # ── 3. Execute action ─────────────────────────────────────────────────
-        # Mask disallowed sell actions → hold (model learns not to try them)
+        # ── 3. Execute action (mask disallowed sell actions → hold) ───────────
         if action in _ALL_SELL_ACTIONS and action not in self._valid_sell_actions:
             action = 0
 
@@ -412,8 +466,6 @@ class OptionsEnv(gym.Env):
             margin_cap = 0.95 if will_be_covered else self.max_margin_ratio
             margin_val = self.margin_balance * S
 
-            # Prospective margin: check combined margin AFTER opening new legs.
-            # A strangle can have LOWER margin than a naked call (legs offset).
             prospective = []
             size = self._position_size()
             if want_call:
@@ -438,42 +490,39 @@ class OptionsEnv(gym.Env):
         self.idx        += 1
         self.step_count += 1
 
-        # Reward: change in equity (BTC), normalised by initial margin
-        S_new, dvol_new, _ = self._row() if self.idx < len(self.data) else self._row(self.idx - 1)
-        equity_now  = self._equity_btc(S_new, dvol_new)
-        reward      = (equity_now - self._prev_equity) / self.initial_margin_btc
+        S_new, dvol_new, _, _ = self._row() if self.idx < len(self.data) else self._row(self.idx - 1)
+        equity_now   = self._equity_btc(S_new, dvol_new)
+        reward       = (equity_now - self._prev_equity) / self.initial_margin_btc
         self._prev_equity = equity_now
         self._peak_equity = max(self._peak_equity, equity_now)
 
-        # Capital efficiency bonus (BTC-scaled)
+        # Capital efficiency bonus
         has_pos = self.call_pos is not None or self.put_pos is not None
         reward += self.capital_eff_bonus if has_pos else -self.capital_eff_bonus
 
         # Net delta guard
-        # Assets: margin_balance BTC (delta = +1/BTC)
-        # Obligations: short call reduces delta; short put adds delta (put_d < 0 → -put_d > 0)
-        # Covered calls are fine (net_delta < margin_balance); penalise only when
-        # net delta exceeds collateral, i.e. short puts lever exposure beyond assets.
         sigma_new = self._sigma(dvol_new)
         net_delta = self.margin_balance
         if self.call_pos:
             call_d     = bs_delta(S_new, self.call_pos["strike"], self.call_pos["dte"] / 365, self.r, sigma_new, "call")
             net_delta -= call_d * self.call_pos["size"]
         if self.put_pos:
-            put_d      = bs_delta(S_new, self.put_pos["strike"],  self.put_pos["dte"]  / 365, self.r, sigma_new, "put")
-            net_delta -= put_d * self.put_pos["size"]   # put_d < 0, so this increases net_delta
+            put_d      = bs_delta(S_new, self.put_pos["strike"], self.put_pos["dte"] / 365, self.r, sigma_new, "put")
+            net_delta -= put_d * self.put_pos["size"]
         net_delta_norm = net_delta / max(self.initial_margin_btc, 1e-8)
         excess = max(0.0, net_delta_norm - 1.0 - self.delta_threshold)
         reward -= excess * self.delta_penalty_coef
 
-        # Asymmetric loss penalty — amplify bad steps during losing weeks
+        # Asymmetric loss penalty — amplify bad steps during losing periods
         self._equity_history.append(equity_now)
-        weekly_ref  = self._equity_history[0]   # equity up to expiry_days ago
+        weekly_ref  = self._equity_n_days_ago(self.expiry_days)
         weekly_drop = (weekly_ref - equity_now) / max(weekly_ref, 1e-8)
         if weekly_drop > self.loss_threshold and reward < 0:
             reward *= self.loss_multiplier
 
-        terminated = equity_now < self.initial_margin_btc * 0.50
+        # Terminate when peak drawdown exceeds the conditioning limit
+        equity_dd_peak = (equity_now - self._peak_equity) / self.initial_margin_btc
+        terminated = equity_dd_peak < -self.max_drawdown_limit
         truncated  = self.step_count >= self.episode_length or self.idx >= len(self.data) - 1
 
         return self._obs(), float(reward), terminated, truncated, {}
