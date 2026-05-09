@@ -1,3 +1,9 @@
+# MKL + libgomp conflict: Intel's threading layer is incompatible with the GCC OpenMP
+# library (libgomp.so.1) bundled in the PyTorch base image. Set GNU mode before any
+# numpy/torch import so SubprocVecEnv workers inherit a compatible threading context.
+import os
+os.environ.setdefault("MKL_THREADING_LAYER", "GNU")
+
 """
 FastAPI training sidecar.
 
