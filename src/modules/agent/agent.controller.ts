@@ -1,8 +1,10 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
+  Patch,
   Post,
   Query,
   UseGuards,
@@ -60,6 +62,24 @@ export class AgentController {
     return this.agentService.createRun({ userId: user.id, ...body });
   }
 
+  @Patch('runs/:id')
+  @RequireScopes(ApiKeyScope.AGENT_WRITE)
+  @ApiOperation({ summary: 'Update agent name or notes' })
+  updateRun(
+    @CurrentUser() user: { id: string },
+    @Param('id') id: string,
+    @Body() body: { name?: string; notes?: string },
+  ) {
+    return this.agentService.updateRun(user.id, id, body);
+  }
+
+  @Delete('runs/:id')
+  @RequireScopes(ApiKeyScope.AGENT_WRITE)
+  @ApiOperation({ summary: 'Hard-delete an agent run and all its actions' })
+  deleteRun(@CurrentUser() user: { id: string }, @Param('id') id: string) {
+    return this.agentService.deleteRun(user.id, id);
+  }
+
   @Get('runs')
   @RequireScopes(ApiKeyScope.AGENT_READ)
   @ApiOperation({ summary: 'List your agent runs' })
@@ -109,9 +129,9 @@ export class AgentController {
   @Post('runs/:id/execute')
   @RequireScopes(ApiKeyScope.AGENT_WRITE)
   @ApiOperation({
-    summary: 'Execute the model on historical data via the Python trainer sidecar',
+    summary: 'Queue the model execution for an agent run — returns immediately',
     description:
-      'Calls POST /run on TRAINER_URL. Blocks until the episode completes. ' +
+      'Adds an execute job to the agent-run BullMQ queue. The worker calls POST /run on TRAINER_URL. ' +
       'Actions are logged back via NESTJS_API_KEY. Requires NESTJS_URL + NESTJS_API_KEY on the trainer.',
   })
   @ApiBody({

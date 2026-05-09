@@ -4,9 +4,12 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 import { PrismaService } from '../../core/database/prisma.service';
 import { AgentRunStatus, AgentRunType } from '@prisma/client';
+
+export const AGENT_RUN_QUEUE = 'agent-run';
 
 export interface CreateRunDto {
   userId: string;
@@ -32,6 +35,7 @@ export interface LogActionDto {
   ivRank?: number;
   executedPrice?: number;
   pnlBtc?: number;
+  marginBalanceBtc?: number;
   reason?: string;
 }
 
@@ -41,7 +45,7 @@ export class AgentService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly config: ConfigService,
+    @InjectQueue(AGENT_RUN_QUEUE) private readonly agentRunQueue: Queue,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -50,7 +54,7 @@ export class AgentService {
 
   async createRun(dto: CreateRunDto) {
     if (dto.runType === AgentRunType.LIVE && !dto.deribitAccountId) {
-      throw new BadRequestException('deribitAccountId is required for LIVE runs');
+      throw new BadRequestException('deribitAccountId is required for LIVE agents');
     }
 
     const run = await this.prisma.agentRun.create({
@@ -69,8 +73,11 @@ export class AgentService {
     });
 
     if (run.runType === AgentRunType.BACKTEST && run.sessionId) {
-      this.executeRun(dto.userId, run.id).catch((err: Error) => {
-        this.logger.error(`Backtest auto-dispatch failed for run ${run.id}: ${err.message}`);
+      await this.agentRunQueue.add('execute', { runId: run.id }, {
+        attempts: 2,
+        backoff: { type: 'fixed', delay: 5_000 },
+        removeOnComplete: false,
+        removeOnFail:     false,
       });
     }
 
@@ -99,15 +106,31 @@ export class AgentService {
         actions: { orderBy: { timestamp: 'desc' }, take: 100 },
       },
     });
-    if (!run) throw new NotFoundException('Agent run not found');
+    if (!run) throw new NotFoundException('Agent not found');
     return run;
+  }
+
+  async updateRun(userId: string, id: string, data: { name?: string; notes?: string }) {
+    const run = await this.prisma.agentRun.findFirst({ where: { id, userId } });
+    if (!run) throw new NotFoundException('Agent not found');
+    return this.prisma.agentRun.update({ where: { id }, data });
+  }
+
+  async deleteRun(userId: string, id: string) {
+    const run = await this.prisma.agentRun.findFirst({ where: { id, userId } });
+    if (!run) throw new NotFoundException('Agent not found');
+    await this.prisma.$transaction([
+      this.prisma.agentAction.deleteMany({ where: { runId: id } }),
+      this.prisma.agentRun.delete({ where: { id } }),
+    ]);
+    return { deleted: true, id };
   }
 
   async stopRun(userId: string, id: string) {
     const run = await this.prisma.agentRun.findFirst({ where: { id, userId } });
-    if (!run) throw new NotFoundException('Agent run not found');
+    if (!run) throw new NotFoundException('Agent not found');
     if (run.status !== AgentRunStatus.ACTIVE && run.status !== AgentRunStatus.PAUSED) {
-      throw new BadRequestException(`Cannot stop a run with status ${run.status}`);
+      throw new BadRequestException(`Cannot stop an agent with status ${run.status}`);
     }
 
     return this.prisma.agentRun.update({
@@ -118,9 +141,9 @@ export class AgentService {
 
   async pauseRun(userId: string, id: string) {
     const run = await this.prisma.agentRun.findFirst({ where: { id, userId } });
-    if (!run) throw new NotFoundException('Agent run not found');
+    if (!run) throw new NotFoundException('Agent not found');
     if (run.status !== AgentRunStatus.ACTIVE) {
-      throw new BadRequestException('Can only pause an ACTIVE run');
+      throw new BadRequestException('Can only pause an ACTIVE agent');
     }
     return this.prisma.agentRun.update({
       where: { id },
@@ -130,9 +153,9 @@ export class AgentService {
 
   async resumeRun(userId: string, id: string) {
     const run = await this.prisma.agentRun.findFirst({ where: { id, userId } });
-    if (!run) throw new NotFoundException('Agent run not found');
+    if (!run) throw new NotFoundException('Agent not found');
     if (run.status !== AgentRunStatus.PAUSED) {
-      throw new BadRequestException('Can only resume a PAUSED run');
+      throw new BadRequestException('Can only resume a PAUSED agent');
     }
     return this.prisma.agentRun.update({
       where: { id },
@@ -146,24 +169,25 @@ export class AgentService {
 
   async logActionBatch(runId: string, actions: Omit<LogActionDto, 'runId'>[]) {
     const run = await this.prisma.agentRun.findUnique({ where: { id: runId } });
-    if (!run) throw new NotFoundException('Agent run not found');
+    if (!run) throw new NotFoundException('Agent not found');
     if (!actions.length) return { logged: 0 };
 
     await this.prisma.agentAction.createMany({
       data: actions.map((a) => ({
         runId,
-        actionType:    a.actionType,
+        actionType:      a.actionType,
         ...(a.timestamp ? { timestamp: a.timestamp } : {}),
-        instrument:    a.instrument,
-        quantity:      a.quantity,
-        price:         a.price,
-        orderId:       a.orderId,
-        btcPrice:      a.btcPrice,
-        delta:         a.delta,
-        ivRank:        a.ivRank,
-        executedPrice: a.executedPrice,
-        pnlBtc:        a.pnlBtc,
-        reason:        a.reason,
+        instrument:      a.instrument,
+        quantity:        a.quantity,
+        price:           a.price,
+        orderId:         a.orderId,
+        btcPrice:        a.btcPrice,
+        delta:           a.delta,
+        ivRank:          a.ivRank,
+        executedPrice:   a.executedPrice,
+        pnlBtc:           a.pnlBtc,
+        marginBalanceBtc: a.marginBalanceBtc,
+        reason:           a.reason,
       })),
     });
 
@@ -181,23 +205,24 @@ export class AgentService {
 
   async logAction(dto: LogActionDto) {
     const run = await this.prisma.agentRun.findUnique({ where: { id: dto.runId } });
-    if (!run) throw new NotFoundException('Agent run not found');
+    if (!run) throw new NotFoundException('Agent not found');
 
     const action = await this.prisma.agentAction.create({
       data: {
-        runId:         dto.runId,
-        actionType:    dto.actionType,
+        runId:           dto.runId,
+        actionType:      dto.actionType,
         ...(dto.timestamp ? { timestamp: dto.timestamp } : {}),
-        instrument:    dto.instrument,
-        quantity:      dto.quantity,
-        price:         dto.price,
-        orderId:       dto.orderId,
-        btcPrice:      dto.btcPrice,
-        delta:         dto.delta,
-        ivRank:        dto.ivRank,
-        executedPrice: dto.executedPrice,
-        pnlBtc:        dto.pnlBtc,
-        reason:        dto.reason,
+        instrument:      dto.instrument,
+        quantity:        dto.quantity,
+        price:           dto.price,
+        orderId:         dto.orderId,
+        btcPrice:        dto.btcPrice,
+        delta:           dto.delta,
+        ivRank:          dto.ivRank,
+        executedPrice:   dto.executedPrice,
+        pnlBtc:           dto.pnlBtc,
+        marginBalanceBtc: dto.marginBalanceBtc,
+        reason:           dto.reason,
       },
     });
 
@@ -219,7 +244,7 @@ export class AgentService {
 
   async getRunActions(userId: string, runId: string, limit?: number) {
     const run = await this.prisma.agentRun.findFirst({ where: { id: runId, userId } });
-    if (!run) throw new NotFoundException('Agent run not found');
+    if (!run) throw new NotFoundException('Agent not found');
 
     return this.prisma.agentAction.findMany({
       where: { runId },
@@ -261,7 +286,7 @@ export class AgentService {
   // Execute
   // ---------------------------------------------------------------------------
 
-  /** Trigger the Python sidecar to run the model linked to this agent run. */
+  /** Queue the model execution for an agent — returns immediately. */
   async executeRun(
     userId: string,
     id: string,
@@ -269,45 +294,24 @@ export class AgentService {
     dataTo?: string,
     envOverrides?: Record<string, any>,
   ) {
-    const run = await this.prisma.agentRun.findFirst({
-      where: { id, userId },
-    });
-    if (!run) throw new NotFoundException('Agent run not found');
-    if (run.status !== AgentRunStatus.ACTIVE) {
-      throw new BadRequestException(`Run is not active (status: ${run.status})`);
+    const run = await this.prisma.agentRun.findFirst({ where: { id, userId } });
+    if (!run) throw new NotFoundException('Agent not found');
+
+    // BACKTEST agents can always be re-executed (processor resets state)
+    const canRerun = run.runType === AgentRunType.BACKTEST;
+    if (!canRerun && run.status !== AgentRunStatus.ACTIVE) {
+      throw new BadRequestException(`Agent is not active (status: ${run.status})`);
     }
     if (!run.sessionId) {
-      throw new BadRequestException('Run has no linked training session — set sessionId when creating the run');
+      throw new BadRequestException('Agent has no linked training session — set sessionId when creating the agent');
     }
 
-    await this.prisma.$transaction([
-      this.prisma.agentAction.deleteMany({ where: { runId: id } }),
-      this.prisma.agentRun.update({
-        where: { id },
-        data:  { currentCapitalBtc: run.initialCapitalBtc },
-      }),
-    ]);
+    const job = await this.agentRunQueue.add(
+      'execute',
+      { runId: id, dataFrom, dataTo, envOverrides },
+      { attempts: 2, backoff: { type: 'fixed', delay: 5_000 }, removeOnComplete: false, removeOnFail: false },
+    );
 
-    const trainerUrl = this.config.get<string>('TRAINER_URL') ?? 'http://localhost:8000';
-
-    const response = await fetch(`${trainerUrl}/run`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({
-        run_id:     id,
-        session_id: run.sessionId,
-        ...(dataFrom      ? { data_from:      dataFrom      } : {}),
-        ...(dataTo        ? { data_to:        dataTo        } : {}),
-        ...(envOverrides  ? { env_overrides:  envOverrides  } : {}),
-      }),
-      signal: AbortSignal.timeout(3_600_000),
-    });
-
-    if (!response.ok) {
-      const text = await response.text().catch(() => 'no body');
-      throw new BadRequestException(`Trainer responded ${response.status}: ${text}`);
-    }
-
-    return response.json();
+    return { queued: true, runId: id, jobId: String(job.id) };
   }
 }
