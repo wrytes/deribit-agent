@@ -349,7 +349,7 @@ export class TrainingService {
 
   async listModels() {
     return this.prisma.trainedModel.findMany({
-      include: { session: { select: { name: true, algorithm: true, currency: true } } },
+      include: { session: { select: { name: true, algorithm: true, currency: true, totalTimesteps: true } } },
       orderBy: { createdAt: 'desc' },
     });
   }
