@@ -379,9 +379,10 @@ model AgentAction {
   delta    Decimal?
   ivRank   Decimal?
 
-  executedPrice Decimal?
-  pnlBtc        Decimal?
-  reason        String?  // model explanation
+  executedPrice    Decimal?
+  pnlBtc           Decimal?
+  marginBalanceBtc Decimal? // margin balance (BTC incl. premiums) at decision time
+  reason           String?  // model explanation
 
   run AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
 
