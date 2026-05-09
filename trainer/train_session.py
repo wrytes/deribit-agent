@@ -123,4 +123,12 @@ def train_session(session_id: str) -> dict:
         "size_bytes":      size_bytes,
         "mean_reward":     float(mean_reward),
         "std_reward":      float(std_reward),
+        # Manifest fields — stored in TrainedModel.metadata by NestJS
+        "obs_version":     manifest.obs_version,
+        "obs_dims":        manifest.obs_dims,
+        "obs_features":    manifest.obs_features,
+        "action_dims":     manifest.action_dims,
+        "data_columns":    manifest.data_columns,
+        "env_version":     manifest.env_version,
+        "policy":          manifest.policy,
     }

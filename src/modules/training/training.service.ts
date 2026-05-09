@@ -261,6 +261,13 @@ export class TrainingService {
       sharpe_ratio?: number;
       max_drawdown?: number;
       win_rate?: number;
+      obs_version?: string;
+      obs_dims?: number;
+      obs_features?: string[];
+      action_dims?: number;
+      data_columns?: string[];
+      env_version?: string;
+      policy?: string;
     },
     error?: string,
     userId?: string,
@@ -283,6 +290,15 @@ export class TrainingService {
         sharpeRatio: result.sharpe_ratio,
         maxDrawdown: result.max_drawdown,
         winRate:     result.win_rate,
+        metadata: result.obs_version ? {
+          obs_version:  result.obs_version,
+          obs_dims:     result.obs_dims,
+          obs_features: result.obs_features,
+          action_dims:  result.action_dims,
+          data_columns: result.data_columns,
+          env_version:  result.env_version,
+          policy:       result.policy,
+        } : undefined,
       });
 
       if (userId) {
