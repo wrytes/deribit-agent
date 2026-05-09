@@ -128,21 +128,21 @@ def run_session(
     data, dates = build_data(candles, dvol_df)
 
     # Find the first row index whose date falls on or after the requested from_dt.
-    # Rows before that index are warmup-only — lookback windows reference them but
-    # the agent never acts on them.
+    # Rows before it are warmup — the 45-day load window above provides ~32 trading
+    # days of prior data for rolling lookbacks without shifting the user's start date.
     from_date = from_dt.date() if isinstance(from_dt, datetime) else from_dt
     start_idx = next(
         (i for i, d in enumerate(dates) if d.date() >= from_date),
         0,
     )
-    start_idx = max(start_idx, 30)  # enforce minimum lookback window
     logger.info("Warmup: %d rows before start_idx=%d (%s)", start_idx, start_idx, dates[start_idx].date())
 
     # ── Env config: defaults → session hyperparams → run-time overrides ───────
     hp      = session.get("hyperparams") or {}
     env_cfg = {**DEFAULT_ENV, **(hp.get("env", {})), **(env_overrides or {})}
-    env_cfg["fast_margin"]    = False
-    env_cfg["episode_length"] = len(data) - start_idx  # steps from start_idx to end
+    env_cfg["fast_margin"]            = False
+    env_cfg["episode_length"]         = len(data) - start_idx  # steps from start_idx to end
+    env_cfg["randomize_conditioning"] = False  # fixed conditioning at inference
 
     # ── Load model with manifest validation ───────────────────────────────────
     registry = ModelRegistry(Path(os.environ.get("MODELS_DIR", "/app/models")))
@@ -215,17 +215,18 @@ def run_session(
                 instrument = call_label or put_label
 
             pending.append({
-                "actionType": action_type,
-                "timestamp":  current_date.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "instrument": instrument,
-                "btcPrice":   round(S, 2),
-                "delta":      round(portfolio_delta, 4),
-                "ivRank":     round(dvol, 2),
-                "pnlBtc":     round(real_pnl_btc, 6),
-                "reason":     _action_reason(action_id),
+                "actionType":       action_type,
+                "timestamp":        current_date.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "instrument":       instrument,
+                "btcPrice":         round(S, 2),
+                "delta":            round(portfolio_delta, 4),
+                "ivRank":           round(dvol, 2),
+                "pnlBtc":          round(real_pnl_btc, 6),
+                "marginBalanceBtc": round(float(env.margin_balance), 6),
+                "reason":           _action_reason(action_id),
             })
 
-        if terminated or truncated:
+        if truncated:
             break
 
     _flush_actions(nestjs_url, api_key, run_id, pending)

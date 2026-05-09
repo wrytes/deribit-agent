@@ -128,8 +128,8 @@ class OptionsEnv(gym.Env):
 
         # Conditioning — randomized per episode during training, fixed at inference
         self._randomize_conditioning = bool(config.get("randomize_conditioning", False))
-        self.max_drawdown_limit = float(config.get("max_drawdown_limit", 0.20))
-        self.aggression_level   = float(config.get("aggression_level", 0.5))
+        self.max_drawdown_limit      = float(config.get("max_drawdown_limit", 0.20))
+        self.aggression_level        = float(config.get("aggression_level", 0.5))
 
         self.action_space      = spaces.Discrete(len(ACTION_DEFS))
         self.observation_space = spaces.Box(
