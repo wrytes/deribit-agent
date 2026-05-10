@@ -70,7 +70,7 @@ export class TrainingController {
     body: {
       name: string;
       description?: string;
-      currency: string;
+      currency?: string;
       dataFrom: string;
       dataTo: string;
       resolution?: string;
@@ -82,23 +82,25 @@ export class TrainingController {
       rollDteThreshold?: number;
       riskProfile?: RiskProfile;
       hyperparams?: Record<string, any>;
+      resumeFromModelId?: string;
     },
   ) {
     return this.trainingService.createSession({
-      name:              body.name,
-      description:       body.description,
-      currency:          body.currency,
-      dataFrom:          new Date(body.dataFrom),
-      dataTo:            new Date(body.dataTo),
-      resolution:        body.resolution,
-      algorithm:         body.algorithm,
-      allowedStrategies: body.allowedStrategies,
-      allowedActions:    body.allowedActions,
-      expiryDaysMin:     body.expiryDaysMin,
-      expiryDaysMax:     body.expiryDaysMax,
-      rollDteThreshold:  body.rollDteThreshold,
-      riskProfile:       body.riskProfile,
-      hyperparams:       body.hyperparams,
+      name:               body.name,
+      description:        body.description,
+      currency:           body.currency,
+      dataFrom:           new Date(body.dataFrom),
+      dataTo:             new Date(body.dataTo),
+      resolution:         body.resolution,
+      algorithm:          body.algorithm,
+      allowedStrategies:  body.allowedStrategies,
+      allowedActions:     body.allowedActions,
+      expiryDaysMin:      body.expiryDaysMin,
+      expiryDaysMax:      body.expiryDaysMax,
+      rollDteThreshold:   body.rollDteThreshold,
+      riskProfile:        body.riskProfile,
+      hyperparams:        body.hyperparams,
+      resumeFromModelId:  body.resumeFromModelId,
     });
   }
 

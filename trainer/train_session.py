@@ -74,17 +74,31 @@ def train_session(session_id: str) -> dict:
         [lambda d=train_data, c=env_cfg: OptionsEnv(d, c) for _ in range(N_ENVS)]
     )
 
-    model = PPO(
-        policy,
-        vec_env,
-        learning_rate = float(train_cfg["learning_rate"]),
-        n_steps       = int(train_cfg["n_steps"]),
-        batch_size    = int(train_cfg["batch_size"]),
-        n_epochs      = int(train_cfg["n_epochs"]),
-        gamma         = float(train_cfg["gamma"]),
-        ent_coef      = float(train_cfg.get("ent_coef", 0.02)),
-        verbose       = 1,
-    )
+    resume_model_path = hp.get("resume_model_path")
+    if resume_model_path:
+        logger.info("Session %s — resuming from %s", session_id, resume_model_path)
+        resume_registry = ModelRegistry(MODELS_DIR)
+        model, _ = resume_registry.load(resume_model_path)  # validates obs_version
+        model.set_env(vec_env)
+        model.learning_rate = float(train_cfg["learning_rate"])
+        model.n_steps       = int(train_cfg["n_steps"])
+        model.batch_size    = int(train_cfg["batch_size"])
+        model.n_epochs      = int(train_cfg["n_epochs"])
+        model.gamma         = float(train_cfg["gamma"])
+        model.ent_coef      = float(train_cfg.get("ent_coef", 0.02))
+        policy = type(model.policy).__name__
+    else:
+        model = PPO(
+            policy,
+            vec_env,
+            learning_rate = float(train_cfg["learning_rate"]),
+            n_steps       = int(train_cfg["n_steps"]),
+            batch_size    = int(train_cfg["batch_size"]),
+            n_epochs      = int(train_cfg["n_epochs"]),
+            gamma         = float(train_cfg["gamma"]),
+            ent_coef      = float(train_cfg.get("ent_coef", 0.02)),
+            verbose       = 1,
+        )
 
     logger.info(
         "Policy input dim: %d  obs_space: %s  action_space: %s",

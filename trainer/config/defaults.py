@@ -52,7 +52,7 @@ DEFAULT_ENV: dict = {
     "roll_dte_threshold":     0,
     "max_margin_ratio":       0.8,
     "risk_free_rate":         0.05,
-    "episode_length":         365,
+    "episode_length":         90,
     "fast_margin":            True,
     "capital_eff_bonus":      0.0001,
     "delta_threshold":        0.30,

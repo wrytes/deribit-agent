@@ -20,7 +20,7 @@ export interface RiskProfile {
 export interface CreateSessionDto {
   name: string;
   description?: string;
-  currency: string;
+  currency?: string;             // optional when resumeFromModelId is set
   dataFrom: Date;
   dataTo: Date;
   resolution?: string;
@@ -32,6 +32,7 @@ export interface CreateSessionDto {
   rollDteThreshold?: number;
   riskProfile?: RiskProfile;
   hyperparams?: Record<string, any>;
+  resumeFromModelId?: string;    // continue training from an existing model
 }
 
 export interface CreateModelDto {
@@ -98,16 +99,40 @@ export class TrainingService {
   }
 
   async createSession(dto: CreateSessionDto) {
+    let currency  = dto.currency;
+    let algorithm = dto.algorithm ?? 'PPO';
+    let resumeModelPath: string | undefined;
+
+    let baseTimesteps = 0;
+
+    if (dto.resumeFromModelId) {
+      const baseModel = await this.prisma.trainedModel.findUnique({
+        where:   { id: dto.resumeFromModelId },
+        include: { session: true },
+      });
+      if (!baseModel) throw new NotFoundException(`Model ${dto.resumeFromModelId} not found`);
+      resumeModelPath = baseModel.storagePath;
+      currency     ??= baseModel.session?.currency ?? 'BTC';
+      algorithm      = baseModel.session?.algorithm ?? algorithm;
+      baseTimesteps  = baseModel.session?.totalTimesteps ?? 0;
+    }
+
+    if (!currency) throw new BadRequestException('currency is required');
+
+    const hyperparams = resumeModelPath
+      ? { ...this.buildHyperparams(dto), resume_model_path: resumeModelPath, base_timesteps: baseTimesteps }
+      : this.buildHyperparams(dto);
+
     const session = await this.prisma.trainingSession.create({
       data: {
         name:        dto.name,
         description: dto.description,
-        currency:    dto.currency,
+        currency,
         dataFrom:    dto.dataFrom,
         dataTo:      dto.dataTo,
-        resolution:  dto.resolution  ?? '1D',
-        algorithm:   dto.algorithm   ?? 'PPO',
-        hyperparams: this.buildHyperparams(dto),
+        resolution:  dto.resolution ?? '1D',
+        algorithm,
+        hyperparams,
         status:      TrainingStatus.QUEUED,
       },
     });
@@ -289,7 +314,9 @@ export class TrainingService {
     }
 
     const session = await this.getSession(id);
-    await this.markCompleted(id, result?.total_timesteps, result?.final_reward);
+    const baseTimesteps = (session.hyperparams as Record<string, any>)?.base_timesteps ?? 0;
+    const totalTimesteps = (result?.total_timesteps ?? 0) + baseTimesteps;
+    await this.markCompleted(id, totalTimesteps || undefined, result?.final_reward);
 
     if (result?.model_path) {
       await this.registerModel({
@@ -361,7 +388,7 @@ export class TrainingService {
 
   async listModels() {
     return this.prisma.trainedModel.findMany({
-      include: { session: { select: { name: true, algorithm: true, currency: true, totalTimesteps: true } } },
+      include: { session: { select: { name: true, algorithm: true, currency: true, totalTimesteps: true, status: true } } },
       orderBy: { createdAt: 'desc' },
     });
   }
