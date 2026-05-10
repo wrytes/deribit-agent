@@ -388,11 +388,13 @@ model AgentAction {
   delta    Decimal?
   ivRank   Decimal?
 
-  executedPrice    Decimal?
-  pnlBtc           Decimal?
+  executedPrice    Decimal? // always the original premium per unit (set on all event types)
+  pnlBtc           Decimal? // lifetime realized P&L (settlement_expired, close); null on open/marks
   feeBtc           Decimal? // trading fee paid in BTC (open/close only; 0 on expiry; null on marks)
   thetaBtc         Decimal? // daily time decay in BTC/unit (negative; open/unrealized events only)
-  marginBalanceBtc Decimal? // margin balance (BTC incl. premiums) at decision time
+  cashflowBtc      Decimal? // gross BTC in (+open) or out (−close/expired) before fees; null on marks
+  equityBtc        Decimal? // margin − Σ(mktPrem × size for open positions) at event time
+  marginBalanceBtc Decimal? // actual cash margin (cashflows − fees, no unrealized)
   reason           String?  // model explanation
 
   run AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)

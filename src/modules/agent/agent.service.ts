@@ -37,6 +37,8 @@ export interface LogActionDto {
   pnlBtc?: number;
   feeBtc?: number;
   thetaBtc?: number;
+  cashflowBtc?: number;
+  equityBtc?: number;
   marginBalanceBtc?: number;
   reason?: string;
 }
@@ -190,6 +192,8 @@ export class AgentService {
         pnlBtc:           a.pnlBtc,
         feeBtc:           a.feeBtc,
         thetaBtc:         a.thetaBtc,
+        cashflowBtc:      a.cashflowBtc,
+        equityBtc:        a.equityBtc,
         marginBalanceBtc: a.marginBalanceBtc,
         reason:           a.reason,
       })),
@@ -227,6 +231,8 @@ export class AgentService {
         pnlBtc:           dto.pnlBtc,
         feeBtc:           dto.feeBtc,
         thetaBtc:         dto.thetaBtc,
+        cashflowBtc:      dto.cashflowBtc,
+        equityBtc:        dto.equityBtc,
         marginBalanceBtc: dto.marginBalanceBtc,
         reason:           dto.reason,
       },

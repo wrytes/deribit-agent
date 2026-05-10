@@ -162,6 +162,11 @@ class OptionsEnv(gym.Env):
         self._peak_equity   = self.initial_margin_btc
         self._cached_margin = 0.0
 
+        # Intermediate state shared between settle() and act()
+        self._settle_S      = 0.0
+        self._settle_sigma  = 0.0
+        self._settle_events : list[dict] = []
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
@@ -432,23 +437,31 @@ class OptionsEnv(gym.Env):
 
         return self._obs(), {}
 
-    def step(self, action: int):
+    def settle(self) -> tuple[list[dict], np.ndarray]:
+        """
+        Phase 1 of the daily cycle: tick DTE, expire positions, mark-to-market.
+
+        Runs all settlement accounting for the current day WITHOUT advancing the
+        day index or executing any trade action. Returns the post-settlement
+        observation so the model can predict on the settled state.
+
+        Must be followed immediately by act() to complete the day.
+        Stashes intermediate state in self._settle_* for act() to consume.
+        """
         events: list[dict] = []
         S, dvol, _, _ = self._row()
         sigma          = self._sigma(dvol)
 
-        # ── 1. Settlement phase ───────────────────────────────────────────────
         if self.step_count == 0:
             events.append({
-                "type":              "settlement_init",
-                "btc_price":         float(S),
+                "type":               "settlement_init",
+                "btc_price":          float(S),
                 "margin_balance_btc": self.margin_balance,
             })
 
         if self.call_pos: self.call_pos["dte"] -= 1
         if self.put_pos:  self.put_pos["dte"]  -= 1
 
-        # Capture expired positions before _settle_expired clears them
         expired_events: list[dict] = []
         for attr in ("call_pos", "put_pos"):
             pos = getattr(self, attr)
@@ -459,9 +472,7 @@ class OptionsEnv(gym.Env):
             else:
                 intrinsic = max(pos["strike"] - S, 0.0) / S
             open_fee_unit = pos.get("fee_btc_unit", pos["prem_btc_unit"] * TRADE_FEE)
-            # Lifetime realized P&L = (premium collected − intrinsic paid − open fee) × size
-            # No expiry fee (TRADE_FEE = 0 on settlement)
-            lifetime_pnl = (pos["prem_btc_unit"] - intrinsic - open_fee_unit) * pos["size"]
+            lifetime_pnl  = (pos["prem_btc_unit"] - intrinsic - open_fee_unit) * pos["size"]
             expired_events.append({
                 "type":               "settlement_expired",
                 "option_type":        pos["type"],
@@ -473,7 +484,6 @@ class OptionsEnv(gym.Env):
                 "pnl_btc":            float(lifetime_pnl),
                 "fee_btc":            0.0,
                 "btc_price":          float(S),
-                # margin_balance_btc filled after settlement
             })
 
         self.margin_balance += self._settle_expired(S)
@@ -482,7 +492,6 @@ class OptionsEnv(gym.Env):
             evt["margin_balance_btc"] = self.margin_balance
         events.extend(expired_events)
 
-        # Unrealized mark-to-market for surviving open positions
         for attr in ("call_pos", "put_pos"):
             pos = getattr(self, attr)
             if pos is None:
@@ -490,25 +499,41 @@ class OptionsEnv(gym.Env):
             T           = pos["dte"] / 365.0
             current_btc = bs_price(S, pos["strike"], T, self.r, sigma, pos["type"]) / S
             events.append({
-                "type":              "settlement_unrealized",
-                "option_type":       pos["type"],
-                "strike":            float(pos["strike"]),
-                "size":              float(pos["size"]),
-                "dte":               pos["dte"],
-                "premium_btc_unit":  float(pos["prem_btc_unit"]),
-                "current_btc_unit":  float(current_btc),
-                "btc_price":         float(S),
+                "type":               "settlement_unrealized",
+                "option_type":        pos["type"],
+                "strike":             float(pos["strike"]),
+                "size":               float(pos["size"]),
+                "dte":                pos["dte"],
+                "premium_btc_unit":   float(pos["prem_btc_unit"]),
+                "current_btc_unit":   float(current_btc),
+                "btc_price":          float(S),
                 "margin_balance_btc": self.margin_balance,
             })
 
-        # ── 2. Compute margin ─────────────────────────────────────────────────
         self._cached_margin = self._portfolio_margin_usd(S, sigma)
 
-        # ── 3. Execute action (mask disallowed sell actions → hold) ───────────
+        # Stash for act()
+        self._settle_S      = S
+        self._settle_sigma  = sigma
+        self._settle_events = events
+
+        return events, self._obs()
+
+    def act(self, action: int) -> tuple[np.ndarray, float, bool, bool, dict]:
+        """
+        Phase 2 of the daily cycle: execute model action and advance to next day.
+
+        Must be called after settle() on the same day. Returns the standard
+        gym (obs, reward, terminated, truncated, info) tuple where info["events"]
+        contains both settlement events and any trade events from the action.
+        """
+        S     = self._settle_S
+        sigma = self._settle_sigma
+
+        # Mask disallowed sell actions → hold
         if action in _ALL_SELL_ACTIONS and action not in self._valid_sell_actions:
             action = 0
 
-        # Snapshot positions before executing so we can diff after
         call_before = dict(self.call_pos) if self.call_pos else None
         put_before  = dict(self.put_pos)  if self.put_pos  else None
 
@@ -555,17 +580,15 @@ class OptionsEnv(gym.Env):
 
         self.margin_balance += btc_delta
 
-        # Diff positions before/after to emit open/close trade events
         trade_events: list[dict] = []
         for attr, pos_b in (("call_pos", call_before), ("put_pos", put_before)):
             pos_a = getattr(self, attr)
             if pos_b is not None and pos_a is None:
-                # Position was closed — compute lifetime realized P&L
-                T             = pos_b["dte"] / 365.0
-                buyback_unit  = bs_price(S, pos_b["strike"], T, self.r, sigma, pos_b["type"]) / S
-                close_fee_u   = buyback_unit * TRADE_FEE
-                open_fee_u    = pos_b.get("fee_btc_unit", pos_b["prem_btc_unit"] * TRADE_FEE)
-                lifetime_pnl  = (pos_b["prem_btc_unit"] - buyback_unit - open_fee_u - close_fee_u) * pos_b["size"]
+                T            = pos_b["dte"] / 365.0
+                buyback_unit = bs_price(S, pos_b["strike"], T, self.r, sigma, pos_b["type"]) / S
+                close_fee_u  = buyback_unit * TRADE_FEE
+                open_fee_u   = pos_b.get("fee_btc_unit", pos_b["prem_btc_unit"] * TRADE_FEE)
+                lifetime_pnl = (pos_b["prem_btc_unit"] - buyback_unit - open_fee_u - close_fee_u) * pos_b["size"]
                 trade_events.append({
                     "type":             "close",
                     "option_type":      pos_b["type"],
@@ -580,7 +603,6 @@ class OptionsEnv(gym.Env):
                     "action_id":        action,
                 })
             elif pos_b is None and pos_a is not None:
-                # Position was opened — P&L is zero (premium offsets obligation); fee is the only real cost
                 open_fee = pos_a["prem_btc_unit"] * pos_a["size"] * TRADE_FEE
                 trade_events.append({
                     "type":             "open",
@@ -589,7 +611,7 @@ class OptionsEnv(gym.Env):
                     "size":             float(pos_a["size"]),
                     "dte":              pos_a["dte"],
                     "premium_btc_unit": float(pos_a["prem_btc_unit"]),
-                    "pnl_btc":          None,   # no P&L at open; premium offsets obligation
+                    "pnl_btc":          None,
                     "fee_btc":          float(open_fee),
                     "btc_price":        float(S),
                     "action_id":        action,
@@ -597,23 +619,20 @@ class OptionsEnv(gym.Env):
 
         for evt in trade_events:
             evt["margin_balance_btc"] = self.margin_balance
-        events.extend(trade_events)
 
-        # ── 4. Advance to next day ────────────────────────────────────────────
+        # ── Advance to next day ───────────────────────────────────────────────
         self.idx        += 1
         self.step_count += 1
 
         S_new, dvol_new, _, _ = self._row() if self.idx < len(self.data) else self._row(self.idx - 1)
-        equity_now   = self._equity_btc(S_new, dvol_new)
-        reward       = (equity_now - self._prev_equity) / self.initial_margin_btc
+        equity_now    = self._equity_btc(S_new, dvol_new)
+        reward        = (equity_now - self._prev_equity) / self.initial_margin_btc
         self._prev_equity = equity_now
         self._peak_equity = max(self._peak_equity, equity_now)
 
-        # Capital efficiency bonus
         has_pos = self.call_pos is not None or self.put_pos is not None
         reward += self.capital_eff_bonus if has_pos else -self.capital_eff_bonus
 
-        # Net delta guard
         sigma_new = self._sigma(dvol_new)
         net_delta = self.margin_balance
         if self.call_pos:
@@ -626,16 +645,26 @@ class OptionsEnv(gym.Env):
         excess = max(0.0, net_delta_norm - 1.0 - self.delta_threshold)
         reward -= excess * self.delta_penalty_coef
 
-        # Asymmetric loss penalty — amplify bad steps during losing periods
         self._equity_history.append(equity_now)
         weekly_ref  = self._equity_n_days_ago(self.expiry_days)
         weekly_drop = (weekly_ref - equity_now) / max(weekly_ref, 1e-8)
         if weekly_drop > self.loss_threshold and reward < 0:
             reward *= self.loss_multiplier
 
-        # Terminate when peak drawdown exceeds the conditioning limit
         equity_dd_peak = (equity_now - self._peak_equity) / self.initial_margin_btc
         terminated = equity_dd_peak < -self.max_drawdown_limit
         truncated  = self.step_count >= self.episode_length or self.idx >= len(self.data) - 1
 
-        return self._obs(), float(reward), terminated, truncated, {"events": events}
+        all_events = self._settle_events + trade_events
+        return self._obs(), float(reward), terminated, truncated, {"events": all_events}
+
+    def step(self, action: int):
+        """
+        Atomic settlement + action for gym/SB3 training compatibility.
+        Internally calls settle() then act(). For inference use the two-phase
+        approach so the model predicts on the post-settlement observation:
+            _, settle_obs = env.settle()
+            obs, reward, terminated, truncated, info = env.act(action)
+        """
+        self.settle()
+        return self.act(action)
