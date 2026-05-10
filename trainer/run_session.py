@@ -300,6 +300,20 @@ def run_session(
         entries = _events_to_log_entries(
             info.get("events", []), current_date, open_pos, env, S, dvol, sigma, action_id
         )
+
+        # On idle days (hold with no positions) no events are emitted — inject a hold
+        # row so the chart has a continuous timeline with BTC price and equity.
+        if not entries:
+            liability = sum(p["size"] * p["mkt_prem"] for p in open_pos.values())
+            equity    = env.margin_balance - liability
+            entries.append({
+                "actionType":        "hold",
+                "timestamp":         current_date.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+                "btcPrice":          round(S, 2),
+                "marginBalanceBtc":  round(env.margin_balance, 6),
+                "equityBtc":         round(equity, 6),
+            })
+
         pending.extend(entries)
 
         if truncated:
