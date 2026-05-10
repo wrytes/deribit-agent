@@ -5,7 +5,7 @@ from collections import deque
 from env.black_scholes import price as bs_price, price_vec as bs_price_vec, delta as bs_delta, strike_from_delta
 from config.defaults import OBS_FEATURES, OBS_VERSION  # noqa: F401 — re-exported for registry
 
-# action_id → None | "close" | {"close_pct": float}
+# action_id → None | "close" | {"close_call_pct": float} | {"close_put_pct": float}
 #            | {"call_delta": float}
 #            | {"put_delta":  float}
 #            | {"call_delta": float, "put_delta": float}
@@ -36,18 +36,25 @@ ACTION_DEFS = {
     13: {"call_delta": 0.40, "put_delta": -0.40},
     14: {"call_delta": 0.30, "put_delta": -0.30},
     15: {"call_delta": 0.20, "put_delta": -0.20},
-    # --- close actions ---
+    # --- close all ---
     16: "close",
-    17: {"close_pct": 0.25},
-    18: {"close_pct": 0.50},
-    19: {"close_pct": 0.60},
-    20: {"close_pct": 0.70},
-    21: {"close_pct": 0.80},
+    # --- close CALL leg at profit target ---
+    17: {"close_call_pct": 0.25},
+    18: {"close_call_pct": 0.50},
+    19: {"close_call_pct": 0.60},
+    20: {"close_call_pct": 0.70},
+    21: {"close_call_pct": 0.80},
+    # --- close PUT leg at profit target ---
+    22: {"close_put_pct": 0.25},
+    23: {"close_put_pct": 0.50},
+    24: {"close_put_pct": 0.60},
+    25: {"close_put_pct": 0.70},
+    26: {"close_put_pct": 0.80},
 }
 
 TRADE_FEE = 0.002  # 0.2% of premium on open/close; 0% on expiry settlement
 
-# Strategy → sell action ID mapping (hold=0, close=16–21 always valid)
+# Strategy → sell action ID mapping (hold=0, close=16–26 always valid)
 _STRATEGY_ORDER = ["short_call", "short_put", "delta_neutral"]
 
 _STRATEGY_ACTION_MAP: dict[str, frozenset[int]] = {
@@ -64,7 +71,7 @@ _PM_PRICE_EXTENDED = np.array([-0.66, -0.33, 0.50, 1.00, 2.00, 3.00, 4.00, 5.00]
 _PM_ALL_SHOCKS     = np.concatenate([_PM_PRICE_SHOCKS, _PM_PRICE_EXTENDED])
 _PM_IV_SHOCKS      = np.array([-0.25, 0.0, 0.25])
 
-# Equity history depth — covers all observation lookbacks (30d) + reward lookback (expiry_days ≤ 30)
+# Equity history depth — covers all observation lookbacks (30d) + reward lookback (expiry_days_max ≤ 30)
 _EQUITY_HISTORY_LEN = 31
 
 
@@ -115,7 +122,10 @@ class OptionsEnv(gym.Env):
         self.initial_margin_btc = float(config.get("initial_margin_btc", 1.0))
         self.position_size_pct  = float(config.get("position_size_pct", 0.10))
         self.max_position_btc   = float(config.get("max_position_btc", 5.0))
-        self.expiry_days        = int(config["expiry_days"])
+        # DTE range — accept single expiry_days for backward compat
+        self.expiry_days_min    = int(config.get("expiry_days_min", config.get("expiry_days", 7)))
+        self.expiry_days_max    = int(config.get("expiry_days_max", config.get("expiry_days", 7)))
+        self.roll_dte_threshold = int(config.get("roll_dte_threshold", 0))
         self.r                  = float(config["risk_free_rate"])
         self.max_margin_ratio   = float(config["max_margin_ratio"])
         self.episode_length     = int(config.get("episode_length", 365))
@@ -138,15 +148,27 @@ class OptionsEnv(gym.Env):
 
         self._pm_iv_shocks = np.array([0.0]) if config.get("fast_margin", True) else _PM_IV_SHOCKS
 
-        # Action masking from allowed_actions config; empty = all sell actions valid
+        # Action masking: allowed_actions accepts strategy name strings (legacy) or action ID ints (new)
         _allowed = config.get("allowed_actions", [])
         if _allowed:
-            self._valid_sell_actions = frozenset().union(*(_STRATEGY_ACTION_MAP.get(s, frozenset()) for s in _allowed))
+            valid: set[int] = set()
+            for item in _allowed:
+                if isinstance(item, str):
+                    valid |= _STRATEGY_ACTION_MAP.get(item, frozenset())
+                elif isinstance(item, (int, float)):
+                    aid = int(item)
+                    if 1 <= aid <= 15:
+                        valid.add(aid)
+            self._valid_sell_actions = frozenset(valid) if valid else _ALL_SELL_ACTIONS
         else:
             self._valid_sell_actions = _ALL_SELL_ACTIONS
 
         self._allowed_mask = np.array(
-            [1.0 if (not _allowed or s in _allowed) else 0.0 for s in _STRATEGY_ORDER],
+            [
+                1.0 if (not _allowed or bool(self._valid_sell_actions & _STRATEGY_ACTION_MAP[s]))
+                else 0.0
+                for s in _STRATEGY_ORDER
+            ],
             dtype=np.float32,
         )
 
@@ -195,7 +217,7 @@ class OptionsEnv(gym.Env):
         return self.margin_balance >= self.call_pos["size"]
 
     def _recursive_size(self, S, sigma, K, option_type):
-        T        = self.expiry_days / 365.0
+        T        = self.expiry_days_max / 365.0
         prem_btc = bs_price(S, K, T, self.r, sigma, option_type) / S
         denom    = max(1.0 - prem_btc, 0.01)
         return min(self.margin_balance / denom, self.max_position_btc)
@@ -224,7 +246,7 @@ class OptionsEnv(gym.Env):
             positions.extend(extra_positions)
         if not positions:
             return 0.0
-        shocks = _PM_PRICE_SHOCKS if self.expiry_days <= 30 else _PM_ALL_SHOCKS
+        shocks = _PM_PRICE_SHOCKS if self.expiry_days_max <= 30 else _PM_ALL_SHOCKS
 
         S_grid = (S * (1.0 + shocks))[:, None]
         v_grid = np.maximum(sigma * (1.0 + self._pm_iv_shocks), 0.01)[None, :]
@@ -238,9 +260,9 @@ class OptionsEnv(gym.Env):
 
         return float(max(0.0, -pnl.min()))
 
-    def _sell_leg(self, S, sigma, strike, option_type):
+    def _sell_leg(self, S, sigma, strike, option_type, dte: int):
         size        = self._position_size()
-        T           = self.expiry_days / 365.0
+        T           = dte / 365.0
         prem_usd    = bs_price(S, strike, T, self.r, sigma, option_type)
         prem_btc    = prem_usd / S
         fee_btc     = prem_btc * size * TRADE_FEE
@@ -249,7 +271,7 @@ class OptionsEnv(gym.Env):
             "prem_btc_unit":   prem_btc,
             "fee_btc_unit":    prem_btc * TRADE_FEE,  # open fee per unit, for lifetime P&L
             "size":            size,
-            "dte":             self.expiry_days,
+            "dte":             dte,
             "type":            option_type,
         }, prem_btc * size - fee_btc
 
@@ -268,19 +290,24 @@ class OptionsEnv(gym.Env):
         return (self._close_leg("call_pos", S, sigma)
                 + self._close_leg("put_pos",  S, sigma))
 
+    def _close_leg_at_profit(self, attr: str, S: float, sigma: float, target_pct: float) -> float:
+        """Close a single leg if profit capture >= target_pct."""
+        pos = getattr(self, attr)
+        if pos is None:
+            return 0.0
+        T           = pos["dte"] / 365.0
+        current_btc = bs_price(S, pos["strike"], T, self.r, sigma, pos["type"]) / S
+        profit_pct  = (pos["prem_btc_unit"] - current_btc) / max(pos["prem_btc_unit"], 1e-8)
+        if profit_pct >= target_pct:
+            return self._close_leg(attr, S, sigma)
+        return 0.0
+
     def _close_at_profit(self, S, sigma, target_pct):
         """Close each leg independently where profit capture >= target_pct."""
-        btc_delta = 0.0
-        for attr in ("call_pos", "put_pos"):
-            pos = getattr(self, attr)
-            if pos is None:
-                continue
-            T           = pos["dte"] / 365.0
-            current_btc = bs_price(S, pos["strike"], T, self.r, sigma, pos["type"]) / S
-            profit_pct  = (pos["prem_btc_unit"] - current_btc) / max(pos["prem_btc_unit"], 1e-8)
-            if profit_pct >= target_pct:
-                btc_delta += self._close_leg(attr, S, sigma)
-        return btc_delta
+        return (
+            self._close_leg_at_profit("call_pos", S, sigma, target_pct)
+            + self._close_leg_at_profit("put_pos",  S, sigma, target_pct)
+        )
 
     def _settle_expired(self, S):
         """Deribit BTC settlement: intrinsic paid in BTC = max(S_T−K, 0) / S_T × size."""
@@ -323,12 +350,12 @@ class OptionsEnv(gym.Env):
         margin_val = self.margin_balance * S
         equity_btc = self.margin_balance + unreal_btc
 
-        # Call position features
+        # Call position features — DTE normalised by expiry_days_max for consistent range [0,1]
         if self.call_pos:
             call_T         = self.call_pos["dte"] / 365.0
             current_call   = bs_price(S, self.call_pos["strike"], call_T, self.r, sigma, "call") / S
             has_call       = 1.0
-            call_dte_norm  = self.call_pos["dte"] / self.expiry_days
+            call_dte_norm  = self.call_pos["dte"] / self.expiry_days_max
             call_mono      = self.call_pos["strike"] / S - 1.0
             call_d         = bs_delta(S, self.call_pos["strike"], call_T, self.r, sigma, "call")
             call_size_norm = self.call_pos["size"] / self.initial_margin_btc
@@ -341,7 +368,7 @@ class OptionsEnv(gym.Env):
             put_T         = self.put_pos["dte"] / 365.0
             current_put   = bs_price(S, self.put_pos["strike"], put_T, self.r, sigma, "put") / S
             has_put       = 1.0
-            put_dte_norm  = self.put_pos["dte"] / self.expiry_days
+            put_dte_norm  = self.put_pos["dte"] / self.expiry_days_max
             put_mono      = self.put_pos["strike"] / S - 1.0
             put_d         = bs_delta(S, self.put_pos["strike"], put_T, self.r, sigma, "put")
             put_size_norm = self.put_pos["size"] / self.initial_margin_btc
@@ -410,7 +437,7 @@ class OptionsEnv(gym.Env):
         # Minimum start of 30 so all rolling lookbacks (ret_30d, dvol_change_30d, etc.)
         # have real prior data rather than clamping to row 0.
         _WARMUP = 30
-        max_start = len(self.data) - self.episode_length - self.expiry_days - 2
+        max_start = len(self.data) - self.episode_length - self.expiry_days_max - 2
         self.idx            = int(self.np_random.integers(_WARMUP, max(_WARMUP + 1, max_start)))
         self._initial_price = float(self._row()[0])
         self.margin_balance = self.initial_margin_btc
@@ -439,7 +466,7 @@ class OptionsEnv(gym.Env):
 
     def settle(self) -> tuple[list[dict], np.ndarray]:
         """
-        Phase 1 of the daily cycle: tick DTE, expire positions, mark-to-market.
+        Phase 1 of the daily cycle: tick DTE, roll/expire positions, mark-to-market.
 
         Runs all settlement accounting for the current day WITHOUT advancing the
         day index or executing any trade action. Returns the post-settlement
@@ -461,6 +488,36 @@ class OptionsEnv(gym.Env):
 
         if self.call_pos: self.call_pos["dte"] -= 1
         if self.put_pos:  self.put_pos["dte"]  -= 1
+
+        # Roll positions that hit the DTE threshold (roll_dte_threshold > 0, dte > 0 so not yet expired)
+        if self.roll_dte_threshold > 0:
+            for attr in ("call_pos", "put_pos"):
+                pos = getattr(self, attr)
+                if pos is None or pos["dte"] <= 0 or pos["dte"] > self.roll_dte_threshold:
+                    continue
+                T            = pos["dte"] / 365.0
+                buyback_unit = bs_price(S, pos["strike"], T, self.r, sigma, pos["type"]) / S
+                close_fee_u  = buyback_unit * TRADE_FEE
+                open_fee_u   = pos.get("fee_btc_unit", pos["prem_btc_unit"] * TRADE_FEE)
+                lifetime_pnl = (pos["prem_btc_unit"] - buyback_unit - open_fee_u - close_fee_u) * pos["size"]
+                btc_out      = -(buyback_unit + close_fee_u) * pos["size"]
+                self.margin_balance += btc_out
+                events.append({
+                    "type":               "close",
+                    "option_type":        pos["type"],
+                    "strike":             float(pos["strike"]),
+                    "size":               float(pos["size"]),
+                    "dte":                pos["dte"],
+                    "premium_btc_unit":   float(pos["prem_btc_unit"]),
+                    "cost_btc_unit":      float(buyback_unit),
+                    "pnl_btc":            float(lifetime_pnl),
+                    "fee_btc":            float(close_fee_u * pos["size"]),
+                    "btc_price":          float(S),
+                    "action_id":          16,  # logged as close-all action
+                    "reason":             "roll",
+                    "margin_balance_btc": self.margin_balance,
+                })
+                setattr(self, attr, None)
 
         expired_events: list[dict] = []
         for attr in ("call_pos", "put_pos"):
@@ -543,13 +600,27 @@ class OptionsEnv(gym.Env):
         if defn == "close":
             btc_delta = self._close_all(S, sigma)
 
+        elif isinstance(defn, dict) and "close_call_pct" in defn:
+            btc_delta = self._close_leg_at_profit("call_pos", S, sigma, defn["close_call_pct"])
+
+        elif isinstance(defn, dict) and "close_put_pct" in defn:
+            btc_delta = self._close_leg_at_profit("put_pos", S, sigma, defn["close_put_pct"])
+
         elif isinstance(defn, dict) and "close_pct" in defn:
+            # Legacy combined close — kept for any external callers
             btc_delta = self._close_at_profit(S, sigma, defn["close_pct"])
 
         elif defn is not None:
             want_call = "call_delta" in defn and self.call_pos is None
             want_put  = "put_delta"  in defn and self.put_pos  is None
-            T         = self.expiry_days / 365.0
+
+            # Pick expiry DTE randomly in [min, max]
+            dte = (
+                int(self.np_random.integers(self.expiry_days_min, self.expiry_days_max + 1))
+                if self.expiry_days_min < self.expiry_days_max
+                else self.expiry_days_min
+            )
+            T = dte / 365.0
 
             will_be_covered = (
                 want_call
@@ -564,18 +635,18 @@ class OptionsEnv(gym.Env):
             size = self._position_size()
             if want_call:
                 K_c = strike_from_delta(S, T, self.r, sigma, defn["call_delta"], "call")
-                prospective.append(({"strike": K_c, "size": size, "dte": self.expiry_days, "type": "call"}, "call"))
+                prospective.append(({"strike": K_c, "size": size, "dte": dte, "type": "call"}, "call"))
             if want_put:
                 K_p = strike_from_delta(S, T, self.r, sigma, defn["put_delta"], "put")
-                prospective.append(({"strike": K_p, "size": size, "dte": self.expiry_days, "type": "put"}, "put"))
+                prospective.append(({"strike": K_p, "size": size, "dte": dte, "type": "put"}, "put"))
 
             prospective_margin = self._portfolio_margin_usd(S, sigma, extra_positions=prospective)
             if prospective_margin < margin_val * margin_cap and size >= self.min_order_size:
                 if want_call:
-                    self.call_pos, p = self._sell_leg(S, sigma, K_c, "call")
+                    self.call_pos, p = self._sell_leg(S, sigma, K_c, "call", dte)
                     btc_delta += p
                 if want_put:
-                    self.put_pos, p = self._sell_leg(S, sigma, K_p, "put")
+                    self.put_pos, p = self._sell_leg(S, sigma, K_p, "put", dte)
                     btc_delta += p
 
         self.margin_balance += btc_delta
@@ -646,7 +717,7 @@ class OptionsEnv(gym.Env):
         reward -= excess * self.delta_penalty_coef
 
         self._equity_history.append(equity_now)
-        weekly_ref  = self._equity_n_days_ago(self.expiry_days)
+        weekly_ref  = self._equity_n_days_ago(self.expiry_days_max)
         weekly_drop = (weekly_ref - equity_now) / max(weekly_ref, 1e-8)
         if weekly_drop > self.loss_threshold and reward < 0:
             reward *= self.loss_multiplier

@@ -34,7 +34,7 @@ OBS_FEATURES: list[str] = [
 
 # ── Action space ─────────────────────────────────────────────────────────────
 
-ACTION_DIMS = 22  # must equal len(ACTION_DEFS) in env/options_env.py
+ACTION_DIMS = 27  # must equal len(ACTION_DEFS) in env/options_env.py
 
 # ── Data pipeline ────────────────────────────────────────────────────────────
 
@@ -47,7 +47,9 @@ DEFAULT_ENV: dict = {
     "position_size_pct":      1.0,
     "max_position_btc":       5.0,
     "min_order_size":         0.1,
-    "expiry_days":            7,
+    "expiry_days_min":        7,
+    "expiry_days_max":        7,
+    "roll_dte_threshold":     0,
     "max_margin_ratio":       0.8,
     "risk_free_rate":         0.05,
     "episode_length":         90,

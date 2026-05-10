@@ -33,11 +33,15 @@ logger = logging.getLogger(__name__)
 
 
 def _action_reason(action_id: int) -> str:
-    defn = ACTION_DEFS[action_id]
+    defn = ACTION_DEFS.get(action_id)
     if defn is None:
         return "hold"
     if defn == "close":
         return "close all"
+    if isinstance(defn, dict) and "close_call_pct" in defn:
+        return f"close call ≥{int(defn['close_call_pct'] * 100)}% profit"
+    if isinstance(defn, dict) and "close_put_pct" in defn:
+        return f"close put ≥{int(defn['close_put_pct'] * 100)}% profit"
     if isinstance(defn, dict) and "close_pct" in defn:
         return f"close ≥{int(defn['close_pct'] * 100)}% profit"
     parts = []
@@ -172,7 +176,7 @@ def _events_to_log_entries(
             entry["executedPrice"] = round(prem, 6)   # original premium per unit
             entry["pnlBtc"]        = round(float(evt["pnl_btc"]), 6)
             entry["feeBtc"]        = round(float(evt.get("fee_btc", 0.0)), 8)
-            entry["reason"]        = reason
+            entry["reason"]        = evt.get("reason") or reason
 
         entries.append(entry)
 
