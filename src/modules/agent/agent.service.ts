@@ -4,6 +4,7 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
+import { IsArray, IsBoolean, IsInt, IsNumber, IsOptional, IsString } from 'class-validator';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { PrismaService } from '../../core/database/prisma.service';
@@ -12,22 +13,22 @@ import { AgentRunStatus, AgentRunType } from '@prisma/client';
 export const AGENT_RUN_QUEUE = 'agent-run';
 
 export class SaveSettingsDto {
-  dataFrom?: string;
-  dataTo?: string;
-  allowed_actions?: number[];
-  max_drawdown_limit?: number;
-  aggression_level?: number;
-  position_size_pct?: number;
-  max_position_btc?: number;
-  min_order_size?: number;
-  expiry_days_min?: number;
-  expiry_days_max?: number;
-  roll_dte_threshold?: number;
-  max_margin_ratio?: number;
-  delta_threshold?: number;
-  delta_penalty_coef?: number;
-  risk_free_rate?: number;
-  fast_margin?: boolean;
+  @IsOptional() @IsString()   dataFrom?: string;
+  @IsOptional() @IsString()   dataTo?: string;
+  @IsOptional() @IsArray() @IsInt({ each: true })   allowed_actions?: number[];
+  @IsOptional() @IsNumber()   max_drawdown_limit?: number;
+  @IsOptional() @IsNumber()   aggression_level?: number;
+  @IsOptional() @IsNumber()   position_size_pct?: number;
+  @IsOptional() @IsNumber()   max_position_btc?: number;
+  @IsOptional() @IsNumber()   min_order_size?: number;
+  @IsOptional() @IsInt()      expiry_days_min?: number;
+  @IsOptional() @IsInt()      expiry_days_max?: number;
+  @IsOptional() @IsInt()      roll_dte_threshold?: number;
+  @IsOptional() @IsNumber()   max_margin_ratio?: number;
+  @IsOptional() @IsNumber()   delta_threshold?: number;
+  @IsOptional() @IsNumber()   delta_penalty_coef?: number;
+  @IsOptional() @IsNumber()   risk_free_rate?: number;
+  @IsOptional() @IsBoolean()  fast_margin?: boolean;
 }
 
 export interface CreateRunDto {
