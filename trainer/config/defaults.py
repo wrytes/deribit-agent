@@ -12,7 +12,7 @@ declares a different OBS_VERSION will be rejected at load time.
 
 # ── Observation space ────────────────────────────────────────────────────────
 
-OBS_VERSION = "v2"
+OBS_VERSION = "v3"
 
 OBS_FEATURES: list[str] = [
     # Market state (5)
@@ -25,7 +25,7 @@ OBS_FEATURES: list[str] = [
     "has_put", "put_dte_norm", "put_moneyness", "put_delta", "put_size_norm", "put_pnl_pct",
     # Portfolio risk (7)
     "unrealized_btc_norm", "margin_balance_norm", "margin_ratio",
-    "equity_dd_1d", "equity_dd_7d", "equity_dd_30d", "equity_dd_peak",
+    "equity_dd_1d", "equity_dd_7d", "equity_dd_30d", "equity_dd_7d_high",
     # Strategy masks (3)
     "mask_short_call", "mask_short_put", "mask_delta_neutral",
     # Conditioning inputs (2)
@@ -52,7 +52,7 @@ DEFAULT_ENV: dict = {
     "roll_dte_threshold":     0,
     "max_margin_ratio":       0.8,
     "risk_free_rate":         0.05,
-    "episode_length":         730,
+    "episode_length":         365,
     "fast_margin":            True,
     "capital_eff_bonus":      0.0001,
     "delta_threshold":        0.30,

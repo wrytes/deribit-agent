@@ -104,7 +104,7 @@ class OptionsEnv(gym.Env):
       has_put, put_dte_norm, put_moneyness, put_delta, put_size_norm, put_pnl_pct
       --- Portfolio risk (7) ---
       unrealized_btc_norm, margin_balance_norm, margin_ratio,
-      equity_dd_1d, equity_dd_7d, equity_dd_30d, equity_dd_peak
+      equity_dd_1d, equity_dd_7d, equity_dd_30d, equity_dd_7d_high
       --- Strategy masks (3) ---
       mask_short_call, mask_short_put, mask_delta_neutral
       --- Conditioning inputs (2) ---
@@ -181,7 +181,6 @@ class OptionsEnv(gym.Env):
         self.step_count     = 0
         self._initial_price = 1.0
         self._prev_equity   = self.initial_margin_btc
-        self._peak_equity   = self.initial_margin_btc
         self._cached_margin = 0.0
 
         # Intermediate state shared between settle() and act()
@@ -376,14 +375,19 @@ class OptionsEnv(gym.Env):
         else:
             has_put = put_dte_norm = put_mono = put_d = put_size_norm = put_pnl_pct = 0.0
 
-        # Portfolio risk — equity drawdowns (hist[-1] = today, already appended in step)
-        equity_dd_peak = (equity_btc - self._peak_equity) / self.initial_margin_btc
-        eq_1d_ago      = self._equity_n_days_ago(1)
-        eq_7d_ago      = self._equity_n_days_ago(7)
-        eq_30d_ago     = self._equity_n_days_ago(30)
-        equity_dd_1d   = (equity_btc - eq_1d_ago)  / self.initial_margin_btc
-        equity_dd_7d   = (equity_btc - eq_7d_ago)  / self.initial_margin_btc
-        equity_dd_30d  = (equity_btc - eq_30d_ago) / self.initial_margin_btc
+        # Portfolio risk — equity drawdowns
+        # Rolling 7-day high: max equity seen in the last 7 steps.
+        # Gives the model a responsive risk signal tied to recent performance.
+        history       = list(self._equity_history)
+        high_7d       = max(history[-7:]) if history else self.initial_margin_btc
+        equity_dd_7d_high = (equity_btc - high_7d) / self.initial_margin_btc
+
+        eq_1d_ago     = self._equity_n_days_ago(1)
+        eq_7d_ago     = self._equity_n_days_ago(7)
+        eq_30d_ago    = self._equity_n_days_ago(30)
+        equity_dd_1d  = (equity_btc - eq_1d_ago)  / self.initial_margin_btc
+        equity_dd_7d  = (equity_btc - eq_7d_ago)  / self.initial_margin_btc
+        equity_dd_30d = (equity_btc - eq_30d_ago) / self.initial_margin_btc
 
         return np.array([
             # Market state (5)
@@ -420,7 +424,7 @@ class OptionsEnv(gym.Env):
             equity_dd_1d,                                  # 26 equity_dd_1d
             equity_dd_7d,                                  # 27 equity_dd_7d
             equity_dd_30d,                                 # 28 equity_dd_30d
-            equity_dd_peak,                                # 29 equity_dd_peak
+            equity_dd_7d_high,                             # 29 equity_dd_7d_high
             # Strategy masks (3)
             *self._allowed_mask,                           # 30–32
             # Conditioning inputs (2)
@@ -445,7 +449,6 @@ class OptionsEnv(gym.Env):
         self.put_pos        = None
         self.step_count     = 0
         self._prev_equity   = self.initial_margin_btc
-        self._peak_equity   = self.initial_margin_btc
         self._cached_margin = 0.0
         self._equity_history.clear()
         self._equity_history.append(self.initial_margin_btc)
@@ -699,7 +702,6 @@ class OptionsEnv(gym.Env):
         equity_now    = self._equity_btc(S_new, dvol_new)
         reward        = (equity_now - self._prev_equity) / self.initial_margin_btc
         self._prev_equity = equity_now
-        self._peak_equity = max(self._peak_equity, equity_now)
 
         has_pos = self.call_pos is not None or self.put_pos is not None
         reward += self.capital_eff_bonus if has_pos else -self.capital_eff_bonus
@@ -717,13 +719,20 @@ class OptionsEnv(gym.Env):
         reward -= excess * self.delta_penalty_coef
 
         self._equity_history.append(equity_now)
+
         weekly_ref  = self._equity_n_days_ago(self.expiry_days_max)
         weekly_drop = (weekly_ref - equity_now) / max(weekly_ref, 1e-8)
         if weekly_drop > self.loss_threshold and reward < 0:
             reward *= self.loss_multiplier
 
-        equity_dd_peak = (equity_now - self._peak_equity) / self.initial_margin_btc
-        terminated = equity_dd_peak < -self.max_drawdown_limit
+        # Termination: rolling 7-day max drawdown.
+        # Compares current equity to the highest equity seen in the last 7 days
+        # (including today, just appended). More responsive than an all-time peak —
+        # a sustained losing streak triggers termination even after a distant prior peak.
+        history_7d    = list(self._equity_history)[-7:]
+        high_7d       = max(history_7d) if history_7d else self.initial_margin_btc
+        dd_7d_high    = (equity_now - high_7d) / self.initial_margin_btc
+        terminated    = dd_7d_high < -self.max_drawdown_limit
         truncated  = self.step_count >= self.episode_length or self.idx >= len(self.data) - 1
 
         all_events = self._settle_events + trade_events
