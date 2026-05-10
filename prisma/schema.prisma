@@ -348,7 +348,8 @@ model AgentRun {
   realizedPnlBtc   Decimal  @default(0)
   unrealizedPnlBtc Decimal?
 
-  notes     String?
+  notes              String?
+  executionSettings  Json     @default("{}")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

@@ -11,6 +11,25 @@ import { AgentRunStatus, AgentRunType } from '@prisma/client';
 
 export const AGENT_RUN_QUEUE = 'agent-run';
 
+export class SaveSettingsDto {
+  dataFrom?: string;
+  dataTo?: string;
+  allowed_actions?: number[];
+  max_drawdown_limit?: number;
+  aggression_level?: number;
+  position_size_pct?: number;
+  max_position_btc?: number;
+  min_order_size?: number;
+  expiry_days_min?: number;
+  expiry_days_max?: number;
+  roll_dte_threshold?: number;
+  max_margin_ratio?: number;
+  delta_threshold?: number;
+  delta_penalty_coef?: number;
+  risk_free_rate?: number;
+  fast_margin?: boolean;
+}
+
 export interface CreateRunDto {
   userId: string;
   sessionId?: string;
@@ -106,12 +125,21 @@ export class AgentService {
     const run = await this.prisma.agentRun.findFirst({
       where: { id, userId },
       include: {
-        session: { select: { name: true, algorithm: true, currency: true } },
+        session: { select: { name: true, algorithm: true, currency: true, hyperparams: true } },
         actions: { orderBy: { timestamp: 'desc' }, take: 100 },
       },
     });
     if (!run) throw new NotFoundException('Agent not found');
     return run;
+  }
+
+  async saveSettings(userId: string, runId: string, dto: SaveSettingsDto) {
+    const run = await this.prisma.agentRun.findFirst({ where: { id: runId, userId } });
+    if (!run) throw new NotFoundException('Agent not found');
+    return this.prisma.agentRun.update({
+      where: { id: runId },
+      data: { executionSettings: dto as any },
+    });
   }
 
   async updateRun(userId: string, id: string, data: { name?: string; notes?: string }) {
@@ -299,14 +327,11 @@ export class AgentService {
   // ---------------------------------------------------------------------------
 
   /** Queue the model execution for an agent — returns immediately. */
-  async executeRun(
-    userId: string,
-    id: string,
-    dataFrom?: string,
-    dataTo?: string,
-    envOverrides?: Record<string, any>,
-  ) {
-    const run = await this.prisma.agentRun.findFirst({ where: { id, userId } });
+  async executeRun(userId: string, id: string, dataFrom?: string, dataTo?: string) {
+    const run = await this.prisma.agentRun.findFirst({
+      where: { id, userId },
+      include: { session: { select: { hyperparams: true } } },
+    });
     if (!run) throw new NotFoundException('Agent not found');
 
     // BACKTEST agents can always be re-executed (processor resets state)
@@ -318,9 +343,19 @@ export class AgentService {
       throw new BadRequestException('Agent has no linked training session — set sessionId when creating the agent');
     }
 
+    // Resolve env settings: stored executionSettings → fallback to session hyperparams.env
+    const stored = (run.executionSettings as Record<string, any>) ?? {};
+    const sessionEnv = ((run.session?.hyperparams as any)?.env as Record<string, any>) ?? {};
+    const { dataFrom: storedFrom, dataTo: storedTo, ...envPart } =
+      Object.keys(stored).length > 0 ? stored : sessionEnv;
+
+    const effectiveDataFrom = dataFrom ?? storedFrom;
+    const effectiveDataTo   = dataTo   ?? storedTo;
+    const envOverrides       = Object.keys(envPart).length > 0 ? envPart : undefined;
+
     const job = await this.agentRunQueue.add(
       'execute',
-      { runId: id, dataFrom, dataTo, envOverrides },
+      { runId: id, dataFrom: effectiveDataFrom, dataTo: effectiveDataTo, envOverrides },
       { attempts: 2, backoff: { type: 'fixed', delay: 5_000 }, removeOnComplete: false, removeOnFail: false },
     );
 

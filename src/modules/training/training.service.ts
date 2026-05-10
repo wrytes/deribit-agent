@@ -25,7 +25,11 @@ export interface CreateSessionDto {
   dataTo: Date;
   resolution?: string;
   algorithm?: string;
-  allowedStrategies?: string[]; // e.g. ['STRANGLE', 'DELTA_NEUTRAL']
+  allowedStrategies?: string[];  // legacy: strategy name strings
+  allowedActions?: number[];     // new: action ID list (0–26)
+  expiryDaysMin?: number;
+  expiryDaysMax?: number;
+  rollDteThreshold?: number;
   riskProfile?: RiskProfile;
   hyperparams?: Record<string, any>;
 }
@@ -62,9 +66,17 @@ export class TrainingService {
     const base = dto.hyperparams ?? {};
     const envOverrides: Record<string, any> = {};
 
-    if (dto.allowedStrategies?.length) {
+    // Action whitelist: new action-ID list takes priority over legacy strategy names
+    if (dto.allowedActions?.length) {
+      envOverrides.allowed_actions = dto.allowedActions;
+    } else if (dto.allowedStrategies?.length) {
       envOverrides.allowed_actions = dto.allowedStrategies.map((s) => s.toLowerCase());
     }
+
+    // DTE range
+    if (dto.expiryDaysMin !== undefined) envOverrides.expiry_days_min  = dto.expiryDaysMin;
+    if (dto.expiryDaysMax !== undefined) envOverrides.expiry_days_max  = dto.expiryDaysMax;
+    if (dto.rollDteThreshold !== undefined) envOverrides.roll_dte_threshold = dto.rollDteThreshold;
 
     if (dto.riskProfile) {
       const { maxDrawdown, aggressionLevel } = dto.riskProfile;

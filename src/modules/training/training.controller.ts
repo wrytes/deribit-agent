@@ -76,6 +76,10 @@ export class TrainingController {
       resolution?: string;
       algorithm?: string;
       allowedStrategies?: string[];
+      allowedActions?: number[];
+      expiryDaysMin?: number;
+      expiryDaysMax?: number;
+      rollDteThreshold?: number;
       riskProfile?: RiskProfile;
       hyperparams?: Record<string, any>;
     },
@@ -89,6 +93,10 @@ export class TrainingController {
       resolution:        body.resolution,
       algorithm:         body.algorithm,
       allowedStrategies: body.allowedStrategies,
+      allowedActions:    body.allowedActions,
+      expiryDaysMin:     body.expiryDaysMin,
+      expiryDaysMax:     body.expiryDaysMax,
+      rollDteThreshold:  body.rollDteThreshold,
       riskProfile:       body.riskProfile,
       hyperparams:       body.hyperparams,
     });

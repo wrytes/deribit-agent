@@ -15,7 +15,7 @@ import { ScopesGuard } from '../../common/guards/scopes.guard';
 import { RequireScopes } from '../../common/decorators/require-scopes.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { ApiKeyScope, AgentRunStatus, AgentRunType } from '@prisma/client';
-import { AgentService } from './agent.service';
+import { AgentService, SaveSettingsDto } from './agent.service';
 
 @ApiTags('agent')
 @ApiSecurity('api-key')
@@ -126,47 +126,42 @@ export class AgentController {
     return this.agentService.resumeRun(user.id, id);
   }
 
+  @Patch('runs/:id/settings')
+  @RequireScopes(ApiKeyScope.AGENT_WRITE)
+  @ApiOperation({ summary: 'Save per-agent execution settings (persisted in DB, used on next execute)' })
+  saveSettings(
+    @CurrentUser() user: { id: string },
+    @Param('id') id: string,
+    @Body() body: SaveSettingsDto,
+  ) {
+    return this.agentService.saveSettings(user.id, id, body);
+  }
+
   @Post('runs/:id/execute')
   @RequireScopes(ApiKeyScope.AGENT_WRITE)
   @ApiOperation({
     summary: 'Queue the model execution for an agent run — returns immediately',
     description:
-      'Adds an execute job to the agent-run BullMQ queue. The worker calls POST /run on TRAINER_URL. ' +
-      'Actions are logged back via NESTJS_API_KEY. Requires NESTJS_URL + NESTJS_API_KEY on the trainer.',
+      'Env settings come from run.executionSettings (saved via PATCH /runs/:id/settings), ' +
+      'falling back to the session hyperparams.env defaults. ' +
+      'Adds an execute job to the agent-run BullMQ queue.',
   })
   @ApiBody({
     required: false,
     schema: {
       type: 'object',
       properties: {
-        dataFrom:     { type: 'string', format: 'date-time', description: 'Override data start (defaults to session.dataFrom)' },
-        dataTo:       { type: 'string', format: 'date-time', description: 'Override data end (defaults to now)' },
-        envOverrides: {
-          type: 'object',
-          description: 'Merged on top of session env config at run time — no retraining needed',
-          example: { expiry_days: 14, position_size_pct: 0.3, delta_threshold: 0.20 },
-          properties: {
-            expiry_days:        { type: 'number' },
-            position_size_pct:  { type: 'number' },
-            max_position_btc:   { type: 'number' },
-            delta_threshold:    { type: 'number' },
-            delta_penalty_coef: { type: 'number' },
-            max_margin_ratio:   { type: 'number' },
-            risk_free_rate:     { type: 'number' },
-            loss_multiplier:    { type: 'number' },
-            loss_threshold:     { type: 'number' },
-            capital_eff_bonus:  { type: 'number' },
-          },
-        },
+        dataFrom: { type: 'string', format: 'date-time', description: 'Override data start (defaults to stored dataFrom)' },
+        dataTo:   { type: 'string', format: 'date-time', description: 'Override data end (defaults to stored dataTo)' },
       },
     },
   })
   executeRun(
     @CurrentUser() user: { id: string },
     @Param('id') id: string,
-    @Body() body: { dataFrom?: string; dataTo?: string; envOverrides?: Record<string, any> } = {},
+    @Body() body: { dataFrom?: string; dataTo?: string } = {},
   ) {
-    return this.agentService.executeRun(user.id, id, body.dataFrom, body.dataTo, body.envOverrides);
+    return this.agentService.executeRun(user.id, id, body.dataFrom, body.dataTo);
   }
 
   // ---------------------------------------------------------------------------
