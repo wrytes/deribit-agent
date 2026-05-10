@@ -35,6 +35,8 @@ export interface LogActionDto {
   ivRank?: number;
   executedPrice?: number;
   pnlBtc?: number;
+  feeBtc?: number;
+  thetaBtc?: number;
   marginBalanceBtc?: number;
   reason?: string;
 }
@@ -186,6 +188,8 @@ export class AgentService {
         ivRank:          a.ivRank,
         executedPrice:   a.executedPrice,
         pnlBtc:           a.pnlBtc,
+        feeBtc:           a.feeBtc,
+        thetaBtc:         a.thetaBtc,
         marginBalanceBtc: a.marginBalanceBtc,
         reason:           a.reason,
       })),
@@ -221,6 +225,8 @@ export class AgentService {
         ivRank:          dto.ivRank,
         executedPrice:   dto.executedPrice,
         pnlBtc:           dto.pnlBtc,
+        feeBtc:           dto.feeBtc,
+        thetaBtc:         dto.thetaBtc,
         marginBalanceBtc: dto.marginBalanceBtc,
         reason:           dto.reason,
       },

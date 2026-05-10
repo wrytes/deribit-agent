@@ -5,7 +5,9 @@ run_session(run_id, session_id, data_from, data_to, env_overrides)
   1. Loads TrainingSession config and TrainedModel path from DB
   2. Fetches candle + DVOL data for the date range
   3. Runs one PPO episode (deterministic) from step 0
-  4. POSTs each non-hold action to NestJS via NESTJS_URL + NESTJS_API_KEY
+  4. POSTs structured accounting events to NestJS via NESTJS_URL + NESTJS_API_KEY
+     Each day emits: settlement_init (day 1), settlement_expired, settlement_unrealized,
+     then open/close trade events per leg (one entry per instrument).
   5. Returns summary metrics
 """
 
@@ -21,22 +23,11 @@ import psycopg2.extras
 
 from config.defaults import DEFAULT_ENV
 from data.loader import build_data, connect, load_candles, load_dvol, load_session
-from env.black_scholes import delta as bs_delta
+from env.black_scholes import delta as bs_delta, theta as bs_theta
 from env.options_env import ACTION_DEFS, OptionsEnv
 from model.registry import ModelRegistry
 
 logger = logging.getLogger(__name__)
-
-# Map action id → NestJS actionType string
-_ACTION_TYPE: dict[int, str] = {
-    0:  "hold",
-    1:  "sell_call", 2:  "sell_call", 3:  "sell_call",
-    4:  "sell_call", 5:  "sell_call", 6:  "sell_call", 7: "sell_call",
-    8:  "sell_put",  9:  "sell_put",  10: "sell_put",
-    11: "sell_put",  12: "sell_put",
-    13: "sell_strangle", 14: "sell_strangle", 15: "sell_strangle",
-    16: "close", 17: "close", 18: "close", 19: "close", 20: "close", 21: "close",
-}
 
 
 def _action_reason(action_id: int) -> str:
@@ -55,11 +46,113 @@ def _action_reason(action_id: int) -> str:
     return "sell " + " + ".join(parts)
 
 
-def _instrument_label(current_date: datetime, dte: int, strike: float, opt_type: str, size: float | None = None) -> str:
+def _instrument_label(current_date: datetime, dte: int, strike: float, opt_type: str) -> str:
     expiry = (current_date + timedelta(days=dte)).strftime("%d%b%y").upper()
     suffix = "C" if opt_type == "call" else "P"
-    name = f"BTC-{expiry}-{int(strike)}-{suffix}"
-    return f"{size}:{name}" if size is not None else name
+    return f"BTC-{expiry}-{int(strike)}-{suffix}"
+
+
+def _events_to_log_entries(
+    events: list[dict],
+    current_date: datetime,
+    ts: str,
+    env,
+    S: float,
+    dvol: float,
+    sigma: float,
+    action_id: int,
+) -> list[dict]:
+    """Convert env step events to AgentAction payload dicts."""
+    entries = []
+    reason = _action_reason(action_id)
+
+    for evt in events:
+        etype = evt["type"]
+
+        if etype == "settlement_init":
+            entries.append({
+                "actionType":        "settlement_init",
+                "timestamp":         ts,
+                "btcPrice":          round(evt["btc_price"], 2),
+                "marginBalanceBtc":  round(evt["margin_balance_btc"], 6),
+                "reason":            "initial balance",
+            })
+
+        elif etype == "settlement_expired":
+            label = _instrument_label(current_date, 0, evt["strike"], evt["option_type"])
+            itm   = evt["intrinsic_btc_unit"] > 0
+            entries.append({
+                "actionType":        "settlement_expired",
+                "timestamp":         ts,
+                "instrument":        label,
+                "btcPrice":          round(evt["btc_price"], 2),
+                "quantity":          round(evt["size"], 4),
+                "price":             round(evt["intrinsic_btc_unit"], 6),
+                "executedPrice":     round(evt["premium_btc_unit"], 6),
+                "pnlBtc":            round(evt["pnl_btc"], 6),
+                "feeBtc":            0.0,
+                "marginBalanceBtc":  round(evt["margin_balance_btc"], 6),
+                "reason":            "expired ITM" if itm else "expired OTM",
+            })
+
+        elif etype == "settlement_unrealized":
+            label     = _instrument_label(current_date, evt["dte"], evt["strike"], evt["option_type"])
+            T         = evt["dte"] / 365.0
+            leg_delta = bs_delta(S, evt["strike"], T, env.r, sigma, evt["option_type"])
+            leg_theta = bs_theta(S, evt["strike"], T, env.r, sigma, evt["option_type"]) / S
+            entries.append({
+                "actionType":        "settlement_unrealized",
+                "timestamp":         ts,
+                "instrument":        label,
+                "btcPrice":          round(evt["btc_price"], 2),
+                "quantity":          round(evt["size"], 4),
+                "price":             round(evt["current_btc_unit"], 6),
+                "executedPrice":     round(evt["premium_btc_unit"], 6),
+                "delta":             round(leg_delta, 4),
+                "thetaBtc":          round(leg_theta, 8),
+                "ivRank":            round(dvol, 2),
+                "marginBalanceBtc":  round(evt["margin_balance_btc"], 6),
+                "reason":            "daily mark",
+            })
+
+        elif etype == "open":
+            label     = _instrument_label(current_date, evt["dte"], evt["strike"], evt["option_type"])
+            T         = evt["dte"] / 365.0
+            leg_delta = bs_delta(S, evt["strike"], T, env.r, sigma, evt["option_type"])
+            leg_theta = bs_theta(S, evt["strike"], T, env.r, sigma, evt["option_type"]) / S
+            entries.append({
+                "actionType":        "open",
+                "timestamp":         ts,
+                "instrument":        label,
+                "btcPrice":          round(evt["btc_price"], 2),
+                "quantity":          round(evt["size"], 4),
+                "price":             round(evt["premium_btc_unit"], 6),
+                "delta":             round(leg_delta, 4),
+                "thetaBtc":          round(leg_theta, 8),
+                "ivRank":            round(dvol, 2),
+                # pnlBtc omitted — no P&L at open (premium offsets obligation)
+                "feeBtc":            round(evt["fee_btc"], 8),
+                "marginBalanceBtc":  round(evt["margin_balance_btc"], 6),
+                "reason":            reason,
+            })
+
+        elif etype == "close":
+            label = _instrument_label(current_date, evt["dte"], evt["strike"], evt["option_type"])
+            entries.append({
+                "actionType":        "close",
+                "timestamp":         ts,
+                "instrument":        label,
+                "btcPrice":          round(evt["btc_price"], 2),
+                "quantity":          round(evt["size"], 4),
+                "price":             round(evt["cost_btc_unit"], 6),
+                "executedPrice":     round(evt["premium_btc_unit"], 6),
+                "pnlBtc":            round(evt["pnl_btc"], 6),
+                "feeBtc":            round(evt["fee_btc"], 8),
+                "marginBalanceBtc":  round(evt["margin_balance_btc"], 6),
+                "reason":            reason,
+            })
+
+    return entries
 
 
 def _flush_actions(nestjs_url: str, api_key: str, run_id: str, actions: list[dict], chunk_size: int = 200) -> None:
@@ -165,66 +258,21 @@ def run_session(
         S, dvol = float(row[0]), float(row[1])
         sigma   = env._sigma(dvol)
 
-        # Snapshot pre-step state so we can compute real P&L and decide logging
-        call_pos_before = env.call_pos
-        put_pos_before  = env.put_pos
-        had_position    = call_pos_before is not None or put_pos_before is not None
-        equity_before   = env._prev_equity
-
         action, _ = model.predict(obs, deterministic=True)
         action_id = int(action)
 
-        obs, reward, terminated, truncated, _ = env.step(action_id)
+        obs, reward, terminated, truncated, info = env.step(action_id)
         total_reward += float(reward)
         steps        += 1
 
-        # Real P&L = actual equity change, no reward-shaping bonuses/penalties
-        real_pnl_btc = env._prev_equity - equity_before
+        step_idx     = max(0, env.idx - 1)
+        current_date = datetime.combine(dates[step_idx].date(), datetime.min.time(), tzinfo=timezone.utc)
+        ts           = current_date.strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        action_type = _ACTION_TYPE.get(action_id, "hold")
-        is_hold  = action_id == 0
-        is_close = action_type == "close"
-        is_sell  = action_type.startswith("sell_")
-
-        should_log = True  # log every day for continuous accounting
-
-        if should_log:
-            step_idx     = max(0, env.idx - 1)
-            current_date = datetime.combine(dates[step_idx].date(), datetime.min.time(), tzinfo=timezone.utc)
-
-            # Sells: use after-step positions (just opened); holds/closes: use before-step (still open / just closed)
-            log_call = env.call_pos if is_sell else call_pos_before
-            log_put  = env.put_pos  if is_sell else put_pos_before
-
-            call_label, put_label = None, None
-            portfolio_delta = 0.0
-
-            if log_call:
-                T = log_call["dte"] / 365.0
-                portfolio_delta += bs_delta(S, log_call["strike"], T, env.r, sigma, "call")
-                call_label = _instrument_label(current_date, log_call["dte"], log_call["strike"], "call", log_call["size"])
-
-            if log_put:
-                T = log_put["dte"] / 365.0
-                portfolio_delta += bs_delta(S, log_put["strike"], T, env.r, sigma, "put")
-                put_label = _instrument_label(current_date, log_put["dte"], log_put["strike"], "put", log_put["size"])
-
-            if call_label and put_label:
-                instrument = f"{call_label}|{put_label}"
-            else:
-                instrument = call_label or put_label
-
-            pending.append({
-                "actionType":       action_type,
-                "timestamp":        current_date.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "instrument":       instrument,
-                "btcPrice":         round(S, 2),
-                "delta":            round(portfolio_delta, 4),
-                "ivRank":           round(dvol, 2),
-                "pnlBtc":          round(real_pnl_btc, 6),
-                "marginBalanceBtc": round(float(env.margin_balance), 6),
-                "reason":           _action_reason(action_id),
-            })
+        entries = _events_to_log_entries(
+            info.get("events", []), current_date, ts, env, S, dvol, sigma, action_id
+        )
+        pending.extend(entries)
 
         if truncated:
             break

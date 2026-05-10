@@ -1,4 +1,5 @@
 models/*.zip
+models/*.json
 models/checkpoints/
 __pycache__/
 *.pyc

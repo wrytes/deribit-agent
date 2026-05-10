@@ -361,13 +361,22 @@ model AgentRun {
   @@index([status, createdAt])
 }
 
-/// A single decision / order placed by an AgentRun.
+/// A single accounting entry for an AgentRun.
+/// actionType values:
+///   settlement_init       — episode start, initial balance recorded
+///   settlement_unrealized — daily mark-to-market; price=current BTC/unit, executedPrice=original premium BTC/unit; pnlBtc=null (not realized)
+///   settlement_expired    — option expired; price=intrinsic BTC/unit, executedPrice=original premium BTC/unit
+///                           pnlBtc = lifetime realized P&L = (orig − intrinsic − open_fee) × size; feeBtc = 0
+///   open                  — short option opened; price=premium BTC/unit received; pnlBtc=null (premium offsets obligation)
+///                           feeBtc = open fee paid in BTC
+///   close                 — position bought back; price=buyback BTC/unit, executedPrice=original premium BTC/unit
+///                           pnlBtc = lifetime realized P&L = (orig − buyback − open_fee − close_fee) × size; feeBtc = close fee paid
 model AgentAction {
   id    String @id @default(cuid())
   runId String
 
   timestamp  DateTime @default(now())
-  actionType String   // hold | sell_call | sell_put | buy_call | buy_put | close | hedge
+  actionType String
 
   instrument String?
   quantity   Decimal?
@@ -381,6 +390,8 @@ model AgentAction {
 
   executedPrice    Decimal?
   pnlBtc           Decimal?
+  feeBtc           Decimal? // trading fee paid in BTC (open/close only; 0 on expiry; null on marks)
+  thetaBtc         Decimal? // daily time decay in BTC/unit (negative; open/unrealized events only)
   marginBalanceBtc Decimal? // margin balance (BTC incl. premiums) at decision time
   reason           String?  // model explanation
 

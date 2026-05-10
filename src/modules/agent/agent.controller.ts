@@ -181,7 +181,7 @@ export class AgentController {
       type: 'object',
       required: ['actionType'],
       properties: {
-        actionType:    { type: 'string', example: 'sell_call', description: 'hold | sell_call | sell_put | buy_call | buy_put | close | hedge' },
+        actionType:    { type: 'string', example: 'open', description: 'settlement_init | settlement_unrealized | settlement_expired | open | close' },
         timestamp:     { type: 'string', format: 'date-time', description: 'Historical timestamp for backtest actions; defaults to now' },
         instrument:    { type: 'string', example: 'BTC-28MAR25-70000-C' },
         quantity:      { type: 'number', example: 0.1 },
