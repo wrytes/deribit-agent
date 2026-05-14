@@ -29,6 +29,7 @@ from pydantic import BaseModel
 
 from run_session import run_session
 from train_session import train_session
+from paper_tick import paper_tick
 
 logging.basicConfig(
     level=logging.INFO,
@@ -112,6 +113,34 @@ class RunRequest(BaseModel):
     data_from:    Optional[str]  = None  # ISO-8601; defaults to session.dataFrom
     data_to:      Optional[str]  = None  # ISO-8601; defaults to now
     env_overrides: Optional[dict] = None  # merged on top of session env config
+
+
+# ---------------------------------------------------------------------------
+# Paper tick
+# ---------------------------------------------------------------------------
+
+class PaperTickRequest(BaseModel):
+    run_id: str
+
+
+@app.post("/paper/tick")
+async def paper_tick_endpoint(req: PaperTickRequest):
+    """
+    Advance a PAPER agent run by one trading day using today's live option prices.
+    Blocks until the tick completes and actions are flushed to NestJS.
+    """
+    logger.info("Paper tick request: run_id=%s", req.run_id)
+    try:
+        loop   = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, paper_tick, req.run_id)
+        logger.info("Paper tick done: run_id=%s  %s", req.run_id, result)
+        return result
+    except ValueError as exc:
+        logger.warning("Paper tick config error: %s", exc)
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        logger.error("Paper tick failed: run_id=%s  %s", req.run_id, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.post("/run")

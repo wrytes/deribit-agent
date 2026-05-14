@@ -1,11 +1,15 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
+import { ConfigService } from '@nestjs/config';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 import { PrismaService } from '../../core/database/prisma.service';
 import { DeribitClientService } from '../../integrations/deribit/deribit.client.service';
 import { MarketDataService } from '../market-data/market-data.service';
 import { TelegramService } from '../../integrations/telegram/telegram.service';
 import { DataIngestionService } from '../data-ingestion/data-ingestion.service';
-import { StrategyStatus } from '@prisma/client';
+import { AgentRunStatus, AgentRunType, StrategyStatus } from '@prisma/client';
+import { AGENT_RUN_QUEUE } from '../agent/agent.service';
 
 @Injectable()
 export class SchedulerService {
@@ -17,6 +21,8 @@ export class SchedulerService {
     private readonly marketDataService: MarketDataService,
     private readonly telegramService: TelegramService,
     private readonly dataIngestionService: DataIngestionService,
+    private readonly config: ConfigService,
+    @InjectQueue(AGENT_RUN_QUEUE) private readonly agentRunQueue: Queue,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -46,6 +52,16 @@ export class SchedulerService {
       this.logger.error(`Market snapshot failed: ${err.message}`);
     }
 
+    // 3. Option chain snapshot (bumped from 6h to hourly for paper trading accuracy)
+    for (const currency of ['BTC', 'ETH'] as const) {
+      try {
+        const result = await this.dataIngestionService.snapshotOptionChain(currency);
+        this.logger.log(`Options snapshot [${currency}]: ${result.captured} rows`);
+      } catch (err: any) {
+        this.logger.error(`Options snapshot failed [${currency}]: ${err?.message ?? String(err)}`);
+      }
+    }
+
     // 3. Strategy greeks snapshots
     const activeStrategies = await this.prisma.strategy.findMany({
       where: { status: StrategyStatus.ACTIVE },
@@ -64,20 +80,28 @@ export class SchedulerService {
   }
 
   // ---------------------------------------------------------------------------
-  // Every 6 hours: options chain snapshot (IV surface)
+  // Daily 08:00 UTC: tick all active PAPER runs
   // ---------------------------------------------------------------------------
 
-  @Cron('0 */6 * * *')
-  async snapshotOptionChains() {
-    this.logger.log('Options chain snapshot started');
+  @Cron('0 8 * * *')
+  async runPaperTicks() {
+    const activeRuns = await this.prisma.agentRun.findMany({
+      where: { runType: AgentRunType.PAPER, status: AgentRunStatus.ACTIVE },
+    });
 
-    for (const currency of ['BTC', 'ETH'] as const) {
-      try {
-        const result = await this.dataIngestionService.snapshotOptionChain(currency);
-        this.logger.log(`Options snapshot [${currency}]: ${result.captured} rows`);
-      } catch (err) {
-        this.logger.error(`Options snapshot failed [${currency}]: ${err.message}`);
-      }
+    if (!activeRuns.length) return;
+    this.logger.log(`Queuing paper ticks for ${activeRuns.length} active run(s)`);
+
+    for (const run of activeRuns) {
+      const paperState = run.paperState as Record<string, unknown> | null;
+      const today = new Date().toISOString().split('T')[0];
+      if (paperState?.lastTickDate === today) continue;
+
+      await this.agentRunQueue.add(
+        'execute',
+        { runId: run.id, jobType: 'paper-tick' },
+        { attempts: 2, backoff: { type: 'fixed', delay: 5_000 }, removeOnComplete: false, removeOnFail: false },
+      );
     }
   }
 

@@ -247,7 +247,7 @@ export class AgentController {
   })
   logActionBatch(
     @Param('id') runId: string,
-    @Body() body: { actions: any[] },
+    @Body() body: { actions: any[]; currentCapitalBtc?: number; paperState?: Record<string, unknown> },
   ) {
     return this.agentService.logActionBatch(
       runId,
@@ -255,6 +255,7 @@ export class AgentController {
         ...a,
         ...(a.timestamp ? { timestamp: new Date(a.timestamp) } : {}),
       })),
+      { currentCapitalBtc: body.currentCapitalBtc, paperState: body.paperState },
     );
   }
 

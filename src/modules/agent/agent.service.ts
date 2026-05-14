@@ -105,6 +105,15 @@ export class AgentService {
       });
     }
 
+    if (run.runType === AgentRunType.PAPER && run.sessionId) {
+      await this.agentRunQueue.add('execute', { runId: run.id, jobType: 'paper-tick' }, {
+        attempts: 2,
+        backoff: { type: 'fixed', delay: 5_000 },
+        removeOnComplete: false,
+        removeOnFail:     false,
+      });
+    }
+
     return run;
   }
 
@@ -200,40 +209,48 @@ export class AgentService {
   // Actions
   // ---------------------------------------------------------------------------
 
-  async logActionBatch(runId: string, actions: Omit<LogActionDto, 'runId'>[]) {
+  async logActionBatch(
+    runId: string,
+    actions: Omit<LogActionDto, 'runId'>[],
+    opts?: { currentCapitalBtc?: number; paperState?: Record<string, unknown> },
+  ) {
     const run = await this.prisma.agentRun.findUnique({ where: { id: runId } });
     if (!run) throw new NotFoundException('Agent not found');
-    if (!actions.length) return { logged: 0 };
+    if (!actions.length && !opts?.currentCapitalBtc && !opts?.paperState) return { logged: 0 };
 
-    await this.prisma.agentAction.createMany({
-      data: actions.map((a) => ({
-        runId,
-        actionType:      a.actionType,
-        ...(a.timestamp ? { timestamp: a.timestamp } : {}),
-        instrument:      a.instrument,
-        quantity:        a.quantity,
-        price:           a.price,
-        orderId:         a.orderId,
-        btcPrice:        a.btcPrice,
-        delta:           a.delta,
-        ivRank:          a.ivRank,
-        executedPrice:   a.executedPrice,
-        pnlBtc:           a.pnlBtc,
-        feeBtc:           a.feeBtc,
-        thetaBtc:         a.thetaBtc,
-        cashflowBtc:      a.cashflowBtc,
-        equityBtc:        a.equityBtc,
-        marginBalanceBtc: a.marginBalanceBtc,
-        reason:           a.reason,
-      })),
-    });
+    if (actions.length) {
+      await this.prisma.agentAction.createMany({
+        data: actions.map((a) => ({
+          runId,
+          actionType:      a.actionType,
+          ...(a.timestamp ? { timestamp: a.timestamp } : {}),
+          instrument:      a.instrument,
+          quantity:        a.quantity,
+          price:           a.price,
+          orderId:         a.orderId,
+          btcPrice:        a.btcPrice,
+          delta:           a.delta,
+          ivRank:          a.ivRank,
+          executedPrice:   a.executedPrice,
+          pnlBtc:           a.pnlBtc,
+          feeBtc:           a.feeBtc,
+          thetaBtc:         a.thetaBtc,
+          cashflowBtc:      a.cashflowBtc,
+          equityBtc:        a.equityBtc,
+          marginBalanceBtc: a.marginBalanceBtc,
+          reason:           a.reason,
+        })),
+      });
+    }
 
     const totalPnl = actions.reduce((s, a) => s + (Number(a.pnlBtc) || 0), 0);
     await this.prisma.agentRun.update({
       where: { id: runId },
       data: {
-        totalActions:    { increment: actions.length },
-        realizedPnlBtc:  { increment: totalPnl },
+        ...(actions.length ? { totalActions: { increment: actions.length } } : {}),
+        ...(totalPnl       ? { realizedPnlBtc: { increment: totalPnl } }    : {}),
+        ...(opts?.currentCapitalBtc !== undefined ? { currentCapitalBtc: opts.currentCapitalBtc } : {}),
+        ...(opts?.paperState        !== undefined ? { paperState: opts.paperState as any }         : {}),
       },
     });
 

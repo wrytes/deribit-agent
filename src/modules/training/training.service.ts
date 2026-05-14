@@ -342,6 +342,9 @@ export class TrainingService {
 
       if (userId) {
         try {
+          const hp = (session.hyperparams as Record<string, any>) ?? {};
+          const initialCapital: number = hp?.env?.initial_margin_btc ?? 1;
+
           const backtestRun = await this.prisma.agentRun.create({
             data: {
               userId,
@@ -349,8 +352,8 @@ export class TrainingService {
               name:              `${session.name} — auto backtest`,
               currency:          session.currency,
               runType:           AgentRunType.BACKTEST,
-              initialCapitalBtc: 1,
-              currentCapitalBtc: 1,
+              initialCapitalBtc: initialCapital,
+              currentCapitalBtc: initialCapital,
               status:            AgentRunStatus.ACTIVE,
               totalActions:      0,
               realizedPnlBtc:    0,

@@ -350,6 +350,7 @@ model AgentRun {
 
   notes              String?
   executionSettings  Json     @default("{}")
+  paperState         Json?    // PAPER runs only: serialised env state (positions, equity history, last tick date)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 

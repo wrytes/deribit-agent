@@ -188,12 +188,25 @@ class OptionsEnv(gym.Env):
         self._settle_sigma  = 0.0
         self._settle_events : list[dict] = []
 
+        # Real-price overrides for paper trading: {(strike_int, dte, option_type): price_btc}
+        # Set by settle()/act() callers; empty dict = pure Black-Scholes (backtest mode).
+        self._price_overrides: dict = {}
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
+    def _get_price_btc(self, strike: float, dte: int, option_type: str, S: float, sigma: float) -> float:
+        """Return option price in BTC: real override if available, else Black-Scholes."""
+        key = (int(round(strike)), int(dte), option_type)
+        if self._price_overrides and key in self._price_overrides:
+            return self._price_overrides[key]
+        T = dte / 365.0
+        return bs_price(S, strike, T, self.r, sigma, option_type) / S
+
     def _row(self, idx=None):
-        return self.data[idx if idx is not None else self.idx]
+        i = idx if idx is not None else self.idx
+        return self.data[min(i, len(self.data) - 1)]
 
     def _sigma(self, dvol):
         return max(dvol / 100.0, 1e-6)
@@ -260,15 +273,13 @@ class OptionsEnv(gym.Env):
         return float(max(0.0, -pnl.min()))
 
     def _sell_leg(self, S, sigma, strike, option_type, dte: int):
-        size        = self._position_size()
-        T           = dte / 365.0
-        prem_usd    = bs_price(S, strike, T, self.r, sigma, option_type)
-        prem_btc    = prem_usd / S
-        fee_btc     = prem_btc * size * TRADE_FEE
+        size     = self._position_size()
+        prem_btc = self._get_price_btc(strike, dte, option_type, S, sigma)
+        fee_btc  = prem_btc * size * TRADE_FEE
         return {
             "strike":          strike,
             "prem_btc_unit":   prem_btc,
-            "fee_btc_unit":    prem_btc * TRADE_FEE,  # open fee per unit, for lifetime P&L
+            "fee_btc_unit":    prem_btc * TRADE_FEE,
             "size":            size,
             "dte":             dte,
             "type":            option_type,
@@ -278,9 +289,7 @@ class OptionsEnv(gym.Env):
         pos = getattr(self, attr)
         if pos is None:
             return 0.0
-        T        = pos["dte"] / 365.0
-        cost_usd = bs_price(S, pos["strike"], T, self.r, sigma, pos["type"])
-        cost_btc = cost_usd / S
+        cost_btc = self._get_price_btc(pos["strike"], pos["dte"], pos["type"], S, sigma)
         fee_btc  = cost_btc * pos["size"] * TRADE_FEE
         setattr(self, attr, None)
         return -(cost_btc * pos["size"] + fee_btc)
@@ -294,8 +303,7 @@ class OptionsEnv(gym.Env):
         pos = getattr(self, attr)
         if pos is None:
             return 0.0
-        T           = pos["dte"] / 365.0
-        current_btc = bs_price(S, pos["strike"], T, self.r, sigma, pos["type"]) / S
+        current_btc = self._get_price_btc(pos["strike"], pos["dte"], pos["type"], S, sigma)
         profit_pct  = (pos["prem_btc_unit"] - current_btc) / max(pos["prem_btc_unit"], 1e-8)
         if profit_pct >= target_pct:
             return self._close_leg(attr, S, sigma)
@@ -467,7 +475,7 @@ class OptionsEnv(gym.Env):
 
         return self._obs(), {}
 
-    def settle(self) -> tuple[list[dict], np.ndarray]:
+    def settle(self, price_overrides: dict | None = None) -> tuple[list[dict], np.ndarray]:
         """
         Phase 1 of the daily cycle: tick DTE, roll/expire positions, mark-to-market.
 
@@ -478,6 +486,7 @@ class OptionsEnv(gym.Env):
         Must be followed immediately by act() to complete the day.
         Stashes intermediate state in self._settle_* for act() to consume.
         """
+        self._price_overrides = price_overrides or {}
         events: list[dict] = []
         S, dvol, _, _ = self._row()
         sigma          = self._sigma(dvol)
@@ -498,8 +507,7 @@ class OptionsEnv(gym.Env):
                 pos = getattr(self, attr)
                 if pos is None or pos["dte"] <= 0 or pos["dte"] > self.roll_dte_threshold:
                     continue
-                T            = pos["dte"] / 365.0
-                buyback_unit = bs_price(S, pos["strike"], T, self.r, sigma, pos["type"]) / S
+                buyback_unit = self._get_price_btc(pos["strike"], pos["dte"], pos["type"], S, sigma)
                 close_fee_u  = buyback_unit * TRADE_FEE
                 open_fee_u   = pos.get("fee_btc_unit", pos["prem_btc_unit"] * TRADE_FEE)
                 lifetime_pnl = (pos["prem_btc_unit"] - buyback_unit - open_fee_u - close_fee_u) * pos["size"]
@@ -556,8 +564,7 @@ class OptionsEnv(gym.Env):
             pos = getattr(self, attr)
             if pos is None:
                 continue
-            T           = pos["dte"] / 365.0
-            current_btc = bs_price(S, pos["strike"], T, self.r, sigma, pos["type"]) / S
+            current_btc = self._get_price_btc(pos["strike"], pos["dte"], pos["type"], S, sigma)
             events.append({
                 "type":               "settlement_unrealized",
                 "option_type":        pos["type"],
@@ -579,7 +586,7 @@ class OptionsEnv(gym.Env):
 
         return events, self._obs()
 
-    def act(self, action: int) -> tuple[np.ndarray, float, bool, bool, dict]:
+    def act(self, action: int, price_overrides: dict | None = None) -> tuple[np.ndarray, float, bool, bool, dict]:
         """
         Phase 2 of the daily cycle: execute model action and advance to next day.
 
@@ -587,6 +594,8 @@ class OptionsEnv(gym.Env):
         gym (obs, reward, terminated, truncated, info) tuple where info["events"]
         contains both settlement events and any trade events from the action.
         """
+        if price_overrides is not None:
+            self._price_overrides = price_overrides
         S     = self._settle_S
         sigma = self._settle_sigma
 
@@ -658,8 +667,7 @@ class OptionsEnv(gym.Env):
         for attr, pos_b in (("call_pos", call_before), ("put_pos", put_before)):
             pos_a = getattr(self, attr)
             if pos_b is not None and pos_a is None:
-                T            = pos_b["dte"] / 365.0
-                buyback_unit = bs_price(S, pos_b["strike"], T, self.r, sigma, pos_b["type"]) / S
+                buyback_unit = self._get_price_btc(pos_b["strike"], pos_b["dte"], pos_b["type"], S, sigma)
                 close_fee_u  = buyback_unit * TRADE_FEE
                 open_fee_u   = pos_b.get("fee_btc_unit", pos_b["prem_btc_unit"] * TRADE_FEE)
                 lifetime_pnl = (pos_b["prem_btc_unit"] - buyback_unit - open_fee_u - close_fee_u) * pos_b["size"]
