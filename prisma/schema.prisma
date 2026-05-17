@@ -13,15 +13,14 @@ datasource db {
 
 model User {
   id             String  @id @default(cuid())
-  telegramId     BigInt  @unique
+  wrytesUserId   String? @unique  // set for REST-authed users (wrytes-api user.id)
+  telegramId     BigInt? @unique  // set for Telegram-authed users
   telegramHandle String?
 
   notifyTraining Boolean @default(true)
   notifyAgent    Boolean @default(true)
   notifyErrors   Boolean @default(true)
 
-  apiKeys          ApiKey[]
-  magicLinks       MagicLink[]
   deribitAccounts  DeribitAccount[]
   strategies       Strategy[]
   agentRuns        AgentRun[]
@@ -45,43 +44,6 @@ model DeribitAccount {
   @@index([userId])
 }
 
-enum ApiKeyScope {
-  ACCOUNT_READ
-  MARKET_READ
-  DATA_READ
-  DATA_WRITE
-  TRAINING_READ
-  TRAINING_WRITE
-  AGENT_READ
-  AGENT_WRITE
-  ADMIN
-}
-
-model ApiKey {
-  id         String        @id @default(cuid())
-  userId     String
-  keyId      String        @unique
-  secretHash String
-  scopes     ApiKeyScope[] @default([ACCOUNT_READ, MARKET_READ, DATA_READ])
-  expiresAt  DateTime?
-  revokedAt  DateTime?
-  lastUsedAt DateTime?
-  createdAt  DateTime      @default(now())
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-}
-
-model MagicLink {
-  id        String        @id @default(cuid())
-  userId    String
-  token     String        @unique
-  scopes    ApiKeyScope[] @default([ACCOUNT_READ, MARKET_READ, DATA_READ])
-  expiresAt DateTime
-  usedAt    DateTime?
-  createdAt DateTime      @default(now())
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-}
 
 // ---------------------------------------------------------------------------
 // Market Data

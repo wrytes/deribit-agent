@@ -1,10 +1,13 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { LoggerModule } from 'nestjs-pino';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ScheduleModule } from '@nestjs/schedule';
 import { BullModule } from '@nestjs/bullmq';
+import { WrytesAuthModule, ScopesGuard } from '@wrytes/wrytes-api';
+import { WrytesAuthGuard } from './common/guards/wrytes-auth.guard';
 
 // Config
 import appConfig from './config/app.config';
@@ -23,7 +26,7 @@ import { TelegramModule } from './integrations/telegram/telegram.module';
 import { DeribitModule } from './integrations/deribit/deribit.module';
 
 // Feature modules
-import { AuthModule } from './modules/auth/auth.module';
+import { AuthModule } from './modules/auth/auth.module'; // kept for Telegram user management
 import { DeribitAccountModule } from './modules/deribit-account/deribit-account.module';
 import { AccountModule } from './modules/account/account.module';
 import { TradingModule } from './modules/trading/trading.module';
@@ -97,6 +100,10 @@ import { AppService } from './app.service';
       inject: [ConfigService],
     }),
 
+    WrytesAuthModule.forRoot({
+      wrytesApiUrl: process.env.WRYTES_API_URL ?? 'http://localhost:3000',
+      global: false, // we register our own guard below that also upserts the local user
+    }),
     DatabaseModule,
     HealthModule,
     TelegramModule,
@@ -113,6 +120,11 @@ import { AppService } from './app.service';
     EventsModule,
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [
+    AppService,
+    WrytesAuthGuard,
+    { provide: APP_GUARD, useClass: WrytesAuthGuard },
+    { provide: APP_GUARD, useClass: ScopesGuard },
+  ],
 })
 export class AppModule {}
