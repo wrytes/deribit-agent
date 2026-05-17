@@ -5,6 +5,9 @@
 	"author": "Wrytes",
 	"private": true,
 	"license": "MIT",
+	"prisma": {
+		"schema": "prisma/schema"
+	},
 	"scripts": {
 		"build": "nest build",
 		"format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",

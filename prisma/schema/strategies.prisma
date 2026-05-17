@@ -1,0 +1,75 @@
+enum StrategyType {
+  WHEEL
+  COVERED_CALL
+  CASH_SECURED_PUT
+  IRON_CONDOR
+  STRANGLE
+  STRADDLE
+  DELTA_NEUTRAL
+  CUSTOM
+}
+
+enum StrategyStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  CLOSED
+}
+
+model Strategy {
+  id          String         @id @default(cuid())
+  userId      String
+  name        String
+  type        StrategyType
+  status      StrategyStatus @default(DRAFT)
+  description String?
+
+  allocationBtc  Decimal @default(0)
+  params         Json    @default("{}")
+  realizedPnlBtc Decimal @default(0)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  closedAt  DateTime?
+
+  user      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  legs      StrategyLeg[]
+  snapshots StrategySnapshot[]
+
+  @@index([userId, status])
+}
+
+model StrategyLeg {
+  id             String    @id @default(cuid())
+  strategyId     String
+  instrumentName String
+  direction      String
+  quantity       Decimal
+  openPrice      Decimal
+  openTimestamp  DateTime  @default(now())
+  closePrice     Decimal?
+  closeTimestamp DateTime?
+  orderId        String?
+  isOpen         Boolean   @default(true)
+
+  strategy Strategy @relation(fields: [strategyId], references: [id], onDelete: Cascade)
+
+  @@index([strategyId, isOpen])
+}
+
+model StrategySnapshot {
+  id         String   @id @default(cuid())
+  strategyId String
+  timestamp  DateTime @default(now())
+
+  delta            Decimal?
+  gamma            Decimal?
+  theta            Decimal?
+  vega             Decimal?
+  unrealizedPnlBtc Decimal?
+  btcIndexPrice    Decimal
+
+  strategy Strategy @relation(fields: [strategyId], references: [id], onDelete: Cascade)
+
+  @@index([strategyId, timestamp])
+}

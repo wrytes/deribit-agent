@@ -1,0 +1,31 @@
+model User {
+  id             String  @id              // wrytes-api user.id
+  telegramId     BigInt? @unique          // set when user connects via Telegram bot
+  telegramHandle String?
+
+  notifyTraining Boolean @default(true)
+  notifyAgent    Boolean @default(true)
+  notifyErrors   Boolean @default(true)
+
+  deribitAccounts  DeribitAccount[]
+  strategies       Strategy[]
+  agentRuns        AgentRun[]
+}
+
+model DeribitAccount {
+  id           String   @id @default(cuid())
+  userId       String
+  label        String   @default("default")
+  clientId     String
+  clientSecret String
+  baseUrl      String   @default("wss://www.deribit.com/ws/api/v2")
+  isTestnet    Boolean  @default(false)
+  isDefault    Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  agentRuns AgentRun[]
+
+  @@index([userId])
+}
