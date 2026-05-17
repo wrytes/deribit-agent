@@ -14,9 +14,9 @@ FROM pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    PORT=8000 \
     MODELS_DIR=/app/models \
-    MKL_THREADING_LAYER=GNU
+    MKL_THREADING_LAYER=GNU \
+    POLL_INTERVAL=30
 
 WORKDIR /app
 
@@ -42,9 +42,7 @@ COPY . .
 # Model artifacts — mount a volume here in production
 RUN mkdir -p /app/models
 
-EXPOSE 8000
-
 # ---------------------------------------------------------------------------
-# Entrypoint — FastAPI server
+# Entrypoint — DB-polling loop
 # ---------------------------------------------------------------------------
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+CMD ["python", "main.py"]

@@ -16,13 +16,13 @@ run_session(run_id, session_id, data_from, data_to, env_overrides)
 import json
 import logging
 import os
-import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import psycopg2
 import psycopg2.extras
 
+import db_writer
 from config.defaults import DEFAULT_ENV
 from data.loader import build_data, connect, load_candles, load_dvol, load_session
 from env.black_scholes import delta as bs_delta, theta as bs_theta
@@ -183,30 +183,6 @@ def _events_to_log_entries(
     return entries
 
 
-def _flush_actions(nestjs_url: str, api_key: str, run_id: str, actions: list[dict], chunk_size: int = 200) -> None:
-    """POST actions in chunks to stay within the server body-size limit. Raises on any failure."""
-    if not actions:
-        return
-    import urllib.error
-    for start in range(0, len(actions), chunk_size):
-        chunk = actions[start : start + chunk_size]
-        data = json.dumps({"actions": chunk}).encode()
-        req = urllib.request.Request(
-            f"{nestjs_url}/agent/runs/{run_id}/actions/batch",
-            data=data,
-            headers={"Content-Type": "application/json", "x-api-key": api_key},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                logger.info("Flushed actions %d–%d → HTTP %s", start, start + len(chunk), resp.status)
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode(errors="replace")
-            raise RuntimeError(
-                f"Batch flush failed at chunk {start}–{start + len(chunk)}: HTTP {exc.code} — {body}"
-            ) from exc
-
-
 def run_session(
     run_id: str,
     session_id: str,
@@ -214,9 +190,6 @@ def run_session(
     data_to=None,
     env_overrides: dict | None = None,
 ) -> dict:
-    nestjs_url = os.environ.get("NESTJS_URL", "http://localhost:3030")
-    api_key    = os.environ.get("NESTJS_API_KEY", "")
-
     conn = connect()
     try:
         session = load_session(conn, session_id)
@@ -229,8 +202,25 @@ def run_session(
             )
             model_row = cur.fetchone()
 
+            cur.execute('SELECT * FROM "AgentRun" WHERE id = %s', (run_id,))
+            run_row = cur.fetchone()
+
         if not model_row:
             raise ValueError(f"No trained model found for session {session_id!r}")
+
+        # Resolve data range: arg > executionSettings > session defaults
+        exec_settings = dict(run_row.get("executionSettings") or {}) if run_row else {}
+        if isinstance(exec_settings, str):
+            exec_settings = json.loads(exec_settings)
+
+        if data_from is None and exec_settings.get("dataFrom"):
+            data_from = datetime.fromisoformat(exec_settings["dataFrom"].replace("Z", "+00:00"))
+        if data_to is None and exec_settings.get("dataTo"):
+            data_to = datetime.fromisoformat(exec_settings["dataTo"].replace("Z", "+00:00"))
+
+        initial_margin = float((run_row or {}).get("initialCapitalBtc") or 1.0)
+        run_env = {k: v for k, v in exec_settings.items() if k not in ("dataFrom", "dataTo")}
+        merged_env = {**run_env, **(env_overrides or {})}
 
         from_dt = data_from or session["dataFrom"]
         to_dt   = data_to   or datetime.now(timezone.utc)
@@ -253,10 +243,11 @@ def run_session(
     logger.info("Warmup: %d rows before start_idx=%d (%s)", start_idx, start_idx, dates[start_idx].date())
 
     hp      = session.get("hyperparams") or {}
-    env_cfg = {**DEFAULT_ENV, **(hp.get("env", {})), **(env_overrides or {})}
+    env_cfg = {**DEFAULT_ENV, **(hp.get("env", {})), **merged_env}
     env_cfg["fast_margin"]            = False
     env_cfg["episode_length"]         = len(data) - start_idx
     env_cfg["randomize_conditioning"] = False
+    env_cfg["initial_margin_btc"]     = initial_margin
 
     registry = ModelRegistry(Path(os.environ.get("MODELS_DIR", "/app/models")))
     model, manifest = registry.load(model_row["storagePath"])
@@ -319,7 +310,7 @@ def run_session(
         if truncated:
             break
 
-    _flush_actions(nestjs_url, api_key, run_id, pending)
+    db_writer.insert_actions(run_id, pending)
     actions_logged = len(pending)
 
     equity_btc = float(env.margin_balance)

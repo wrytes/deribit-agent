@@ -9,7 +9,6 @@ import {
   Query,
 } from '@nestjs/common';
 import { ApiBody, ApiOperation, ApiQuery, ApiSecurity, ApiTags } from '@nestjs/swagger';
-import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { TrainingStatus } from '@prisma/client';
 import { TrainingService, RiskProfile } from './training.service';
 
@@ -144,42 +143,6 @@ export class TrainingController {
   })
   deleteSession(@Param('id') id: string) {
     return this.trainingService.deleteSession(id);
-  }
-
-  @Post('sessions/:id/callback')
-  @ApiOperation({
-    summary: 'Trainer sidecar callback — marks session completed/failed and registers model',
-    description: 'Called by the Python trainer when training finishes. Requires TRAINING_WRITE scope.',
-  })
-  @ApiBody({
-    schema: {
-      type: 'object',
-      properties: {
-        result: {
-          type: 'object',
-          properties: {
-            total_timesteps: { type: 'number' },
-            final_reward:    { type: 'number' },
-            model_path:      { type: 'string' },
-            model_name:      { type: 'string' },
-            size_bytes:      { type: 'number' },
-            mean_reward:     { type: 'number' },
-            std_reward:      { type: 'number' },
-            sharpe_ratio:    { type: 'number' },
-            max_drawdown:    { type: 'number' },
-            win_rate:        { type: 'number' },
-          },
-        },
-        error: { type: 'string', description: 'Set when training failed' },
-      },
-    },
-  })
-  trainerCallback(
-    @CurrentUser() user: { id: string },
-    @Param('id') id: string,
-    @Body() body: { result?: Record<string, any>; error?: string },
-  ) {
-    return this.trainingService.handleTrainerCallback(id, body.result, body.error, user.id);
   }
 
   // ---------------------------------------------------------------------------

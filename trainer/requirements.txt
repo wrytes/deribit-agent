@@ -6,10 +6,6 @@ numpy>=1.24.0
 pandas>=2.0.0
 scipy>=1.11.0
 
-# API server
-fastapi>=0.110.0
-uvicorn[standard]>=0.29.0
-
 # DB
 psycopg2-binary>=2.9.0
 

@@ -17,13 +17,13 @@ Returns:
 """
 
 import logging
-import os
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import psycopg2
 import psycopg2.extras
 
+import db_writer
 from config.defaults import DEFAULT_ENV
 from data.loader import build_data, connect, load_candles, load_dvol
 from env.options_env import OptionsEnv
@@ -227,4 +227,6 @@ def live_predict(run_id: str) -> dict:
         "Live predict %s: action_id=%d type=%s legs=%d terminated=%s",
         run_id, action_id, result["action_type"], len(result["legs"]), terminated,
     )
+
+    db_writer.set_pending_action(run_id, result)
     return result

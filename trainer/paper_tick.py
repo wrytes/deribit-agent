@@ -15,11 +15,7 @@ Flow:
   7. POST to /agent/runs/:id/actions/batch with currentCapitalBtc + paperState
 """
 
-import json
 import logging
-import os
-import urllib.request
-import urllib.error
 from collections import deque
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -27,6 +23,7 @@ from pathlib import Path
 import psycopg2
 import psycopg2.extras
 
+import db_writer
 from config.defaults import DEFAULT_ENV
 from data.loader import build_data, connect, load_candles, load_dvol
 from env.black_scholes import delta as bs_delta, theta as bs_theta
@@ -126,45 +123,6 @@ def _build_price_overrides(snapshots: list[dict], today: date) -> dict:
     return overrides
 
 
-# ---------------------------------------------------------------------------
-# Action flush (extends run_session._flush_actions with paper-state fields)
-# ---------------------------------------------------------------------------
-
-def _flush_paper_actions(
-    nestjs_url: str,
-    api_key: str,
-    run_id: str,
-    actions: list[dict],
-    current_capital_btc: float,
-    paper_state: dict,
-    chunk_size: int = 200,
-) -> None:
-    """POST actions in chunks; last chunk carries currentCapitalBtc + paperState."""
-    if not actions and not paper_state:
-        return
-
-    chunks = [actions[i : i + chunk_size] for i in range(0, max(len(actions), 1), chunk_size)] or [[]]
-
-    for idx, chunk in enumerate(chunks):
-        is_last = idx == len(chunks) - 1
-        payload: dict = {"actions": chunk}
-        if is_last:
-            payload["currentCapitalBtc"] = current_capital_btc
-            payload["paperState"]        = paper_state
-
-        data = json.dumps(payload).encode()
-        req  = urllib.request.Request(
-            f"{nestjs_url}/agent/runs/{run_id}/actions/batch",
-            data=data,
-            headers={"Content-Type": "application/json", "x-api-key": api_key},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                logger.info("Flushed paper actions %d–%d → HTTP %s", idx * chunk_size, idx * chunk_size + len(chunk), resp.status)
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode(errors="replace")
-            raise RuntimeError(f"Batch flush failed at chunk {idx}: HTTP {exc.code} — {body}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -211,8 +169,6 @@ def _open_pos_from_env(env: OptionsEnv, today_idx: int, dates: list) -> dict:
 # ---------------------------------------------------------------------------
 
 def paper_tick(run_id: str) -> dict:
-    nestjs_url = os.environ.get("NESTJS_URL", "http://localhost:3030")
-    api_key    = os.environ.get("NESTJS_API_KEY", "")
 
     conn = connect()
     try:
@@ -314,8 +270,8 @@ def paper_tick(run_id: str) -> dict:
         "putPos":         env.put_pos,
     }
 
-    _flush_paper_actions(
-        nestjs_url, api_key, run_id, entries,
+    db_writer.insert_actions(
+        run_id, entries,
         current_capital_btc=env.margin_balance,
         paper_state=new_paper_state,
     )

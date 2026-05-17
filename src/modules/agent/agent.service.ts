@@ -162,32 +162,6 @@ export class AgentService {
 			);
 		}
 
-		if (run.runType === AgentRunType.PAPER && run.sessionId) {
-			await this.agentRunQueue.add(
-				'execute',
-				{ runId: run.id, jobType: 'paper-tick' },
-				{
-					attempts: 2,
-					backoff: { type: 'fixed', delay: 5_000 },
-					removeOnComplete: false,
-					removeOnFail: false,
-				},
-			);
-		}
-
-		if (run.runType === AgentRunType.LIVE && run.sessionId) {
-			await this.agentRunQueue.add(
-				'execute',
-				{ runId: run.id, jobType: 'live-tick' },
-				{
-					attempts: 2,
-					backoff: { type: 'fixed', delay: 5_000 },
-					removeOnComplete: false,
-					removeOnFail: false,
-				},
-			);
-		}
-
 		return run;
 	}
 

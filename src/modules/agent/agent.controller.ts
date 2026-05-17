@@ -200,47 +200,6 @@ export class AgentController {
     });
   }
 
-  @Post('runs/:id/actions/batch')
-  @ApiOperation({ summary: 'Bulk-insert actions from a completed backtest episode (single transaction)' })
-  @ApiBody({
-    schema: {
-      type: 'object',
-      required: ['actions'],
-      properties: {
-        actions: {
-          type: 'array',
-          items: {
-            type: 'object',
-            required: ['actionType'],
-            properties: {
-              actionType: { type: 'string' },
-              timestamp:  { type: 'string', format: 'date-time' },
-              instrument: { type: 'string' },
-              btcPrice:   { type: 'number' },
-              delta:      { type: 'number' },
-              ivRank:     { type: 'number' },
-              pnlBtc:     { type: 'number' },
-              reason:     { type: 'string' },
-            },
-          },
-        },
-      },
-    },
-  })
-  logActionBatch(
-    @Param('id') runId: string,
-    @Body() body: { actions: any[]; currentCapitalBtc?: number; paperState?: Record<string, unknown> },
-  ) {
-    return this.agentService.logActionBatch(
-      runId,
-      body.actions.map((a) => ({
-        ...a,
-        ...(a.timestamp ? { timestamp: new Date(a.timestamp) } : {}),
-      })),
-      { currentCapitalBtc: body.currentCapitalBtc, paperState: body.paperState },
-    );
-  }
-
   @Get('runs/:id/actions')
   @ApiOperation({ summary: 'Get the action log for an agent run (newest first)' })
   getActions(
