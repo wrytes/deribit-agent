@@ -10,6 +10,7 @@ import { TelegramService } from '../../integrations/telegram/telegram.service';
 import { DataIngestionService } from '../data-ingestion/data-ingestion.service';
 import { AgentRunStatus, AgentRunType, StrategyStatus } from '@prisma/client';
 import { AGENT_RUN_QUEUE } from '../agent/agent.service';
+import { LiveExecutionService, LiveState } from '../agent/live-execution.service';
 
 @Injectable()
 export class SchedulerService {
@@ -23,6 +24,7 @@ export class SchedulerService {
     private readonly dataIngestionService: DataIngestionService,
     private readonly config: ConfigService,
     @InjectQueue(AGENT_RUN_QUEUE) private readonly agentRunQueue: Queue,
+    private readonly liveExecution: LiveExecutionService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -100,6 +102,87 @@ export class SchedulerService {
       await this.agentRunQueue.add(
         'execute',
         { runId: run.id, jobType: 'paper-tick' },
+        { attempts: 2, backoff: { type: 'fixed', delay: 5_000 }, removeOnComplete: false, removeOnFail: false },
+      );
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // 08:01 UTC: live mark-to-market then queue prediction ticks
+  // One minute after Deribit's 08:00 UTC settlement so transaction logs are final
+  // ---------------------------------------------------------------------------
+
+  @Cron('1 8 * * *')
+  async runLiveTicks() {
+    const activeRuns = await this.prisma.agentRun.findMany({
+      where:   { runType: AgentRunType.LIVE, status: AgentRunStatus.ACTIVE },
+      include: { deribitAccount: true },
+    });
+    if (!activeRuns.length) return;
+    this.logger.log(`Live mark-to-market + ticks for ${activeRuns.length} active LIVE run(s)`);
+
+    const today = new Date().toISOString().split('T')[0];
+
+    for (const run of activeRuns) {
+      if (!run.deribitAccount) continue;
+
+      const liveState    = (run.liveState as LiveState | null) ?? null;
+      if (liveState?.lastTickDate === today) continue;
+
+      const userId    = run.deribitAccount.userId;
+      const currency  = run.currency as 'BTC' | 'ETH';
+      const positions = liveState?.openPositions ?? [];
+
+      // 1. Mark-to-market open positions (handles expiry + daily unrealized)
+      if (positions.length > 0) {
+        try {
+          const marginBalance = Number(run.currentCapitalBtc ?? run.initialCapitalBtc);
+          const { entries, updatedPositions, settledPnlBtc } =
+            await this.liveExecution.markOpenPositions(userId, positions, marginBalance, new Date());
+
+          if (entries.length > 0) {
+            await this.prisma.$transaction([
+              this.prisma.agentAction.createMany({
+                data: entries.map((e: any) => ({
+                  runId:           run.id,
+                  actionType:      e.actionType,
+                  timestamp:       e.timestamp ? new Date(e.timestamp) : undefined,
+                  instrument:      e.instrument,
+                  quantity:        e.quantity,
+                  price:           e.price,
+                  executedPrice:   e.executedPrice,
+                  delta:           e.delta,
+                  pnlBtc:          e.pnlBtc,
+                  feeBtc:          e.feeBtc,
+                  cashflowBtc:     e.cashflowBtc,
+                  equityBtc:       e.equityBtc,
+                  marginBalanceBtc:e.marginBalanceBtc,
+                  reason:          e.reason,
+                })),
+              }),
+              this.prisma.agentRun.update({
+                where: { id: run.id },
+                data: {
+                  totalActions:   { increment: entries.length },
+                  ...(settledPnlBtc ? { realizedPnlBtc: { increment: settledPnlBtc } } : {}),
+                  liveState: {
+                    ...(liveState ?? {}),
+                    openPositions: updatedPositions,
+                  } as any,
+                },
+              }),
+            ]);
+          }
+          this.logger.log(`Live mark-to-market ${run.id}: ${entries.length} entries`);
+        } catch (err: any) {
+          this.logger.error(`Live mark-to-market failed for ${run.id}: ${err?.message ?? String(err)}`);
+        }
+      }
+
+      // 2. Queue prediction + execution tick
+      await this.agentRunQueue.add(
+        'execute',
+        { runId: run.id, jobType: 'live-tick' },
         { attempts: 2, backoff: { type: 'fixed', delay: 5_000 }, removeOnComplete: false, removeOnFail: false },
       );
     }

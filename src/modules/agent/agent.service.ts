@@ -9,6 +9,8 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { PrismaService } from '../../core/database/prisma.service';
 import { AgentRunStatus, AgentRunType } from '@prisma/client';
+import { DeribitClientService } from '../../integrations/deribit/deribit.client.service';
+import { Currency } from '@wrytlabs/deribit-api-client';
 
 export const AGENT_RUN_QUEUE = 'agent-run';
 
@@ -38,7 +40,7 @@ export interface CreateRunDto {
   currency: string;
   runType?: AgentRunType;
   deribitAccountId?: string;
-  initialCapitalBtc: number;
+  initialCapitalBtc?: number;   // optional for LIVE — fetched from Deribit account
   notes?: string;
 }
 
@@ -70,6 +72,7 @@ export class AgentService {
   constructor(
     private readonly prisma: PrismaService,
     @InjectQueue(AGENT_RUN_QUEUE) private readonly agentRunQueue: Queue,
+    private readonly deribitClient: DeribitClientService,
   ) {}
 
   // ---------------------------------------------------------------------------
@@ -77,8 +80,39 @@ export class AgentService {
   // ---------------------------------------------------------------------------
 
   async createRun(dto: CreateRunDto) {
-    if (dto.runType === AgentRunType.LIVE && !dto.deribitAccountId) {
+    const runType = dto.runType ?? AgentRunType.PAPER;
+
+    if (runType === AgentRunType.LIVE && !dto.deribitAccountId) {
       throw new BadRequestException('deribitAccountId is required for LIVE agents');
+    }
+    if (runType !== AgentRunType.LIVE && !dto.initialCapitalBtc) {
+      throw new BadRequestException('initialCapitalBtc is required for BACKTEST and PAPER agents');
+    }
+
+    // For LIVE runs, fetch the actual account equity from Deribit as starting capital
+    let initialCapital = dto.initialCapitalBtc ?? 0;
+    if (runType === AgentRunType.LIVE && dto.deribitAccountId) {
+      const account = await this.prisma.deribitAccount.findUnique({ where: { id: dto.deribitAccountId } });
+      if (account) {
+        try {
+          const client  = await this.deribitClient.getClient(account.userId);
+          const res     = await client.account.getAccountSummary({ currency: dto.currency as Currency });
+          const summary = this.deribitClient.unwrap(res) as any;
+          const fetched = Number(summary.equity ?? summary.balance ?? 0);
+          if (fetched > 0) {
+            initialCapital = fetched;
+          } else {
+            throw new BadRequestException(
+              `Deribit account returned 0 ${dto.currency} balance — fund the account before creating a LIVE agent`,
+            );
+          }
+        } catch (err) {
+          if (err instanceof BadRequestException) throw err;
+          throw new BadRequestException(
+            `Could not fetch ${dto.currency} balance from Deribit account: ${(err as Error)?.message ?? 'connection error'}`,
+          );
+        }
+      }
     }
 
     const run = await this.prisma.agentRun.create({
@@ -87,10 +121,10 @@ export class AgentService {
         sessionId:         dto.sessionId,
         name:              dto.name,
         currency:          dto.currency,
-        runType:           dto.runType ?? AgentRunType.PAPER,
+        runType,
         deribitAccountId:  dto.deribitAccountId,
-        initialCapitalBtc: dto.initialCapitalBtc,
-        currentCapitalBtc: dto.initialCapitalBtc,
+        initialCapitalBtc: initialCapital,
+        currentCapitalBtc: initialCapital,
         notes:             dto.notes,
         status:            AgentRunStatus.ACTIVE,
       },
@@ -107,6 +141,15 @@ export class AgentService {
 
     if (run.runType === AgentRunType.PAPER && run.sessionId) {
       await this.agentRunQueue.add('execute', { runId: run.id, jobType: 'paper-tick' }, {
+        attempts: 2,
+        backoff: { type: 'fixed', delay: 5_000 },
+        removeOnComplete: false,
+        removeOnFail:     false,
+      });
+    }
+
+    if (run.runType === AgentRunType.LIVE && run.sessionId) {
+      await this.agentRunQueue.add('execute', { runId: run.id, jobType: 'live-tick' }, {
         attempts: 2,
         backoff: { type: 'fixed', delay: 5_000 },
         removeOnComplete: false,

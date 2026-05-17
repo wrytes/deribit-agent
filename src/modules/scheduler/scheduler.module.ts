@@ -6,6 +6,7 @@ import { DeribitModule } from '../../integrations/deribit/deribit.module';
 import { MarketDataModule } from '../market-data/market-data.module';
 import { TelegramModule } from '../../integrations/telegram/telegram.module';
 import { DataIngestionModule } from '../data-ingestion/data-ingestion.module';
+import { AgentModule } from '../agent/agent.module';
 import { AGENT_RUN_QUEUE } from '../agent/agent.service';
 
 @Module({
@@ -15,6 +16,7 @@ import { AGENT_RUN_QUEUE } from '../agent/agent.service';
     MarketDataModule,
     TelegramModule,
     DataIngestionModule,
+    AgentModule,
     BullModule.registerQueue({ name: AGENT_RUN_QUEUE }),
   ],
   providers: [SchedulerService],
