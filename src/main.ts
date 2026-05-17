@@ -63,7 +63,6 @@ async function bootstrap() {
 			'api-key',
 		)
 		.addSecurityRequirements('api-key')
-		.addTag('auth', 'API key management and verification')
 		.addTag('deribit-account', 'Deribit credential management')
 		.addTag('account', 'Deribit account data')
 		.addTag('trading', 'Deribit trading operations')

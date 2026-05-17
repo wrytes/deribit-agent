@@ -6,7 +6,8 @@ import { LoggerModule } from 'nestjs-pino';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ScheduleModule } from '@nestjs/schedule';
 import { BullModule } from '@nestjs/bullmq';
-import { WrytesAuthModule, ScopesGuard } from '@wrytes/wrytes-api';
+import { WrytesAuthModule } from '@wrytes/wrytes-api';
+import { ScopesGuard } from './common/guards/scopes.guard';
 import { WrytesAuthGuard } from './common/guards/wrytes-auth.guard';
 
 // Config
