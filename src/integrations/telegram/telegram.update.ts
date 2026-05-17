@@ -67,13 +67,8 @@ export class TelegramUpdate implements OnModuleInit {
 		const from = s(ctx).from;
 		if (!from) return;
 
-		const { isNew } = await this.authService.getOrCreateUser(
-			BigInt(from.id),
-			from.username,
-		);
-		const greeting = isNew
-			? 'Welcome to Deribit Agent! 🤖\n\n'
-			: 'Welcome back! 👋\n\n';
+		const user = await this.authService.findByTelegramId(BigInt(from.id));
+		const greeting = user ? 'Welcome back! 👋\n\n' : 'Welcome to Deribit Agent! 🤖\n\nSign in via wrytes.io to link your account.\n\n';
 
 		await ctx.reply(
 			greeting +
@@ -99,10 +94,12 @@ export class TelegramUpdate implements OnModuleInit {
 		const from = s(ctx).from;
 		if (!from) return;
 
-		const { id: userId } = await this.authService.getOrCreateUser(
-			BigInt(from.id),
-			from.username,
-		);
+		const user = await this.authService.findByTelegramId(BigInt(from.id));
+		if (!user) {
+			await ctx.reply('Please sign in via wrytes.io first to link your account.');
+			return;
+		}
+		const userId = user.id;
 
 		const [deribitAccount] = await Promise.all([
 			this.prisma.deribitAccount
@@ -177,7 +174,7 @@ export class TelegramUpdate implements OnModuleInit {
 		const from = s(ctx).from;
 		if (!from) return;
 
-		const userId = await this.resolveUserId(BigInt(from.id), from.username);
+		const userId = await this.resolveUserId(BigInt(from.id));
 		if (!userId) {
 			await ctx.reply('Use /connect first to link your Deribit account.');
 			return;
@@ -218,7 +215,7 @@ export class TelegramUpdate implements OnModuleInit {
 		const from = s(ctx).from;
 		if (!from) return;
 
-		const userId = await this.resolveUserId(BigInt(from.id), from.username);
+		const userId = await this.resolveUserId(BigInt(from.id));
 		if (!userId) {
 			await ctx.reply('Use /connect first to link your Deribit account.');
 			return;
@@ -262,7 +259,7 @@ export class TelegramUpdate implements OnModuleInit {
 		const from = s(ctx).from;
 		if (!from) return;
 
-		const userId = await this.resolveUserId(BigInt(from.id), from.username);
+		const userId = await this.resolveUserId(BigInt(from.id));
 		if (!userId) {
 			await ctx.reply('Use /connect first to link your Deribit account.');
 			return;
@@ -368,10 +365,13 @@ export class TelegramUpdate implements OnModuleInit {
 
 		if (step === 'client_secret') {
 			const clientId = tc.session.pendingAction?.data?.clientId as string;
-			const { id: userId } = await this.authService.getOrCreateUser(
-				BigInt(from.id),
-				from.username,
-			);
+			const user = await this.authService.findByTelegramId(BigInt(from.id));
+			if (!user) {
+				await ctx.reply('Please sign in via wrytes.io first to link your account.');
+				tc.session.pendingAction = undefined;
+				return;
+			}
+			const userId = user.id;
 
 			const existing = await this.prisma.deribitAccount.findFirst({
 				where: { userId },
@@ -403,17 +403,9 @@ export class TelegramUpdate implements OnModuleInit {
 		}
 	}
 
-	private async resolveUserId(
-		telegramId: bigint,
-		username?: string,
-	): Promise<string | null> {
-		const user = await this.authService.findUserByTelegramId(telegramId);
-		if (user) return user.id;
-		const { id } = await this.authService.getOrCreateUser(
-			telegramId,
-			username,
-		);
-		return id;
+	private async resolveUserId(telegramId: bigint): Promise<string | null> {
+		const user = await this.authService.findByTelegramId(telegramId);
+		return user?.id ?? null;
 	}
 }
 

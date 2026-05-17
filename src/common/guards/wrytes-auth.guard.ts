@@ -35,8 +35,8 @@ export class WrytesAuthGuard implements CanActivate {
     }
 
     req['user'] = await this.prisma.user.upsert({
-      where:  { wrytesUserId: identity.id },
-      create: { wrytesUserId: identity.id, telegramHandle: identity.telegramHandle },
+      where:  { id: identity.id },
+      create: { id: identity.id, telegramHandle: identity.telegramHandle },
       update: { telegramHandle: identity.telegramHandle },
     });
     req['scopes'] = identity.scopes;

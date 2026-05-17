@@ -1,13 +1,12 @@
 import { Module } from '@nestjs/common';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_GUARD, Reflector } from '@nestjs/core';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { LoggerModule } from 'nestjs-pino';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { ScheduleModule } from '@nestjs/schedule';
 import { BullModule } from '@nestjs/bullmq';
-import { WrytesAuthModule } from '@wrytes/wrytes-api';
-import { ScopesGuard } from './common/guards/scopes.guard';
+import { WrytesAuthModule, ScopesGuard } from '@wrytes/wrytes-api';
 import { WrytesAuthGuard } from './common/guards/wrytes-auth.guard';
 
 // Config
@@ -45,87 +44,102 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 
 @Module({
-  imports: [
-    ConfigModule.forRoot({
-      isGlobal: true,
-      load: [appConfig, databaseConfig, redisConfig, telegramConfig, deribitConfig],
-      validationSchema,
-      validationOptions: {
-        allowUnknown: true,
-        abortEarly: false,
-      },
-    }),
+	imports: [
+		ConfigModule.forRoot({
+			isGlobal: true,
+			load: [
+				appConfig,
+				databaseConfig,
+				redisConfig,
+				telegramConfig,
+				deribitConfig,
+			],
+			validationSchema,
+			validationOptions: {
+				allowUnknown: true,
+				abortEarly: false,
+			},
+		}),
 
-    LoggerModule.forRoot({
-      pinoHttp: {
-        transport:
-          process.env.NODE_ENV === 'development'
-            ? {
-                target: 'pino-pretty',
-                options: {
-                  colorize: true,
-                  translateTime: 'SYS:standard',
-                  ignore: 'pid,hostname',
-                },
-              }
-            : undefined,
-        level: process.env.LOG_LEVEL || 'info',
-      },
-    }),
+		LoggerModule.forRoot({
+			pinoHttp: {
+				transport:
+					process.env.NODE_ENV === 'development'
+						? {
+								target: 'pino-pretty',
+								options: {
+									colorize: true,
+									translateTime: 'SYS:standard',
+									ignore: 'pid,hostname',
+								},
+							}
+						: undefined,
+				level: process.env.LOG_LEVEL || 'info',
+			},
+		}),
 
-    ThrottlerModule.forRoot([
-      {
-        ttl: parseInt(process.env.THROTTLE_TTL || '60', 10) * 1000,
-        limit: parseInt(process.env.THROTTLE_LIMIT || '100', 10),
-      },
-    ]),
+		ThrottlerModule.forRoot([
+			{
+				ttl: parseInt(process.env.THROTTLE_TTL || '60', 10) * 1000,
+				limit: parseInt(process.env.THROTTLE_LIMIT || '100', 10),
+			},
+		]),
 
-    ScheduleModule.forRoot(),
+		ScheduleModule.forRoot(),
 
-    EventEmitterModule.forRoot({
-      wildcard: false,
-      delimiter: '.',
-      maxListeners: 10,
-      verboseMemoryLeak: true,
-    }),
+		EventEmitterModule.forRoot({
+			wildcard: false,
+			delimiter: '.',
+			maxListeners: 10,
+			verboseMemoryLeak: true,
+		}),
 
-    BullModule.forRootAsync({
-      imports: [ConfigModule],
-      useFactory: (configService: ConfigService) => ({
-        connection: {
-          host: configService.get<string>('redis.host') || 'localhost',
-          port: configService.get<number>('redis.port') || 6379,
-          password: configService.get<string>('redis.password') || undefined,
-        },
-      }),
-      inject: [ConfigService],
-    }),
+		BullModule.forRootAsync({
+			imports: [ConfigModule],
+			useFactory: (configService: ConfigService) => ({
+				connection: {
+					host:
+						configService.get<string>('redis.host') || 'localhost',
+					port: configService.get<number>('redis.port') || 6379,
+					password:
+						configService.get<string>('redis.password') ||
+						undefined,
+				},
+			}),
+			inject: [ConfigService],
+		}),
 
-    WrytesAuthModule.forRoot({
-      wrytesApiUrl: process.env.WRYTES_API_URL ?? 'http://localhost:3000',
-      global: false, // we register our own guard below that also upserts the local user
-    }),
-    DatabaseModule,
-    HealthModule,
-    TelegramModule,
-    DeribitModule,
-    AuthModule,
-    DeribitAccountModule,
-    AccountModule,
-    TradingModule,
-    MarketDataModule,
-    SchedulerModule,
-    DataIngestionModule,
-    TrainingModule,
-    AgentModule,
-    EventsModule,
-  ],
-  controllers: [AppController],
-  providers: [
-    AppService,
-    WrytesAuthGuard,
-    { provide: APP_GUARD, useClass: WrytesAuthGuard },
-    { provide: APP_GUARD, useClass: ScopesGuard },
-  ],
+		WrytesAuthModule.forRoot({
+			wrytesApiUrl: process.env.WRYTES_API_URL ?? 'http://localhost:3030',
+			global: false, // we register our own guard below that also upserts the local user
+		}),
+		DatabaseModule,
+		HealthModule,
+		TelegramModule,
+		DeribitModule,
+		AuthModule,
+		DeribitAccountModule,
+		AccountModule,
+		TradingModule,
+		MarketDataModule,
+		SchedulerModule,
+		DataIngestionModule,
+		TrainingModule,
+		AgentModule,
+		EventsModule,
+	],
+	controllers: [AppController],
+	providers: [
+		AppService,
+		WrytesAuthGuard,
+		{ provide: APP_GUARD, useClass: WrytesAuthGuard },
+		// useFactory bypasses constructor metadata so Reflector resolves from
+		// deribit-agent's @nestjs/core rather than the package's copy.
+		{
+			provide: APP_GUARD,
+			useFactory: (reflector: Reflector) => new ScopesGuard(reflector),
+			inject: [Reflector],
+		},
+	],
 })
 export class AppModule {}
