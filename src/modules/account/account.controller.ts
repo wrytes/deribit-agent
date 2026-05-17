@@ -1,22 +1,17 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Query } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiQuery, ApiSecurity } from '@nestjs/swagger';
 import { AccountService } from './account.service';
-import { ApiKeyGuard } from '../../common/guards/api-key.guard';
-import { ScopesGuard } from '../../common/guards/scopes.guard';
-import { RequireScopes } from '../../common/decorators/require-scopes.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { ApiKeyScope } from '@prisma/client';
 import type { User } from '@prisma/client';
 
 @Controller('account')
 @ApiTags('account')
-@UseGuards(ApiKeyGuard, ScopesGuard)
 @ApiSecurity('api-key')
 export class AccountController {
   constructor(private readonly accountService: AccountService) {}
 
   @Get('summary')
-  @RequireScopes(ApiKeyScope.ACCOUNT_READ)
+
   @ApiOperation({ summary: 'Get account summary' })
   @ApiQuery({ name: 'currency', required: true })
   @ApiQuery({ name: 'extended', required: false, type: Boolean })
@@ -29,7 +24,7 @@ export class AccountController {
   }
 
   @Get('summaries')
-  @RequireScopes(ApiKeyScope.ACCOUNT_READ)
+
   @ApiOperation({ summary: 'Get account summaries (all currencies)' })
   @ApiQuery({ name: 'extended', required: false, type: Boolean })
   async getAccountSummaries(
@@ -40,7 +35,7 @@ export class AccountController {
   }
 
   @Get('position')
-  @RequireScopes(ApiKeyScope.ACCOUNT_READ)
+
   @ApiOperation({ summary: 'Get position' })
   @ApiQuery({ name: 'instrument_name', required: true })
   async getPosition(
@@ -51,7 +46,7 @@ export class AccountController {
   }
 
   @Get('transaction-log')
-  @RequireScopes(ApiKeyScope.ACCOUNT_READ)
+
   @ApiOperation({ summary: 'Get transaction log' })
   @ApiQuery({ name: 'currency', required: true })
   @ApiQuery({ name: 'start_timestamp', required: false, type: Number, description: 'Unix ms, defaults to 30 days ago' })
@@ -69,7 +64,7 @@ export class AccountController {
   }
 
   @Get('portfolio-margins')
-  @RequireScopes(ApiKeyScope.ACCOUNT_READ)
+
   @ApiOperation({ summary: 'Get portfolio margins' })
   @ApiQuery({ name: 'currency', required: true })
   async getPortfolioMargins(

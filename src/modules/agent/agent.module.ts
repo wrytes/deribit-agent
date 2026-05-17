@@ -5,13 +5,11 @@ import { AgentController } from './agent.controller';
 import { AgentRunProcessor } from './agent.processor';
 import { LiveExecutionService } from './live-execution.service';
 import { DatabaseModule } from '../../core/database/database.module';
-import { AuthModule } from '../auth/auth.module';
 import { DeribitModule } from '../../integrations/deribit/deribit.module';
 
 @Module({
   imports: [
     DatabaseModule,
-    AuthModule,
     DeribitModule,
     BullModule.registerQueue({ name: AGENT_RUN_QUEUE }),
   ],

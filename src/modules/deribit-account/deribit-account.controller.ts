@@ -6,7 +6,6 @@ import {
   Delete,
   Body,
   Param,
-  UseGuards,
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
@@ -18,13 +17,11 @@ import {
 } from '@nestjs/swagger';
 import { DeribitAccountService } from './deribit-account.service';
 import { CreateDeribitAccountDto, UpdateDeribitAccountDto } from './deribit-account.dto';
-import { ApiKeyGuard } from '../../common/guards/api-key.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { User } from '@prisma/client';
 
 @Controller('deribit-account')
 @ApiTags('deribit-account')
-@UseGuards(ApiKeyGuard)
 @ApiSecurity('api-key')
 export class DeribitAccountController {
   constructor(private readonly deribitAccountService: DeribitAccountService) {}

@@ -7,19 +7,14 @@ import {
   Patch,
   Post,
   Query,
-  UseGuards,
 } from '@nestjs/common';
 import { ApiBody, ApiOperation, ApiQuery, ApiSecurity, ApiTags } from '@nestjs/swagger';
-import { ApiKeyGuard } from '../../common/guards/api-key.guard';
-import { ScopesGuard } from '../../common/guards/scopes.guard';
-import { RequireScopes } from '../../common/decorators/require-scopes.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { ApiKeyScope, AgentRunStatus, AgentRunType } from '@prisma/client';
+import { AgentRunStatus, AgentRunType } from '@prisma/client';
 import { AgentService, SaveSettingsDto } from './agent.service';
 
 @ApiTags('agent')
 @ApiSecurity('api-key')
-@UseGuards(ApiKeyGuard, ScopesGuard)
 @Controller('agent')
 export class AgentController {
   constructor(private readonly agentService: AgentService) {}
@@ -29,7 +24,6 @@ export class AgentController {
   // ---------------------------------------------------------------------------
 
   @Post('runs')
-  @RequireScopes(ApiKeyScope.AGENT_WRITE)
   @ApiOperation({ summary: 'Create a new agent run (backtest, paper, or live)' })
   @ApiBody({
     schema: {
@@ -63,7 +57,6 @@ export class AgentController {
   }
 
   @Patch('runs/:id')
-  @RequireScopes(ApiKeyScope.AGENT_WRITE)
   @ApiOperation({ summary: 'Update agent name or notes' })
   updateRun(
     @CurrentUser() user: { id: string },
@@ -74,14 +67,12 @@ export class AgentController {
   }
 
   @Delete('runs/:id')
-  @RequireScopes(ApiKeyScope.AGENT_WRITE)
   @ApiOperation({ summary: 'Hard-delete an agent run and all its actions' })
   deleteRun(@CurrentUser() user: { id: string }, @Param('id') id: string) {
     return this.agentService.deleteRun(user.id, id);
   }
 
   @Get('runs')
-  @RequireScopes(ApiKeyScope.AGENT_READ)
   @ApiOperation({ summary: 'List your agent runs' })
   @ApiQuery({ name: 'status', required: false, enum: AgentRunStatus })
   listRuns(
@@ -92,42 +83,36 @@ export class AgentController {
   }
 
   @Get('runs/:id')
-  @RequireScopes(ApiKeyScope.AGENT_READ)
   @ApiOperation({ summary: 'Get agent run details with last 100 actions' })
   getRun(@CurrentUser() user: { id: string }, @Param('id') id: string) {
     return this.agentService.getRun(user.id, id);
   }
 
   @Get('runs/:id/summary')
-  @RequireScopes(ApiKeyScope.AGENT_READ)
   @ApiOperation({ summary: 'Aggregated action breakdown and P&L for a run' })
   getRunSummary(@CurrentUser() user: { id: string }, @Param('id') id: string) {
     return this.agentService.getRunSummary(user.id, id);
   }
 
   @Post('runs/:id/stop')
-  @RequireScopes(ApiKeyScope.AGENT_WRITE)
   @ApiOperation({ summary: 'Stop an active or paused agent run' })
   stopRun(@CurrentUser() user: { id: string }, @Param('id') id: string) {
     return this.agentService.stopRun(user.id, id);
   }
 
   @Post('runs/:id/pause')
-  @RequireScopes(ApiKeyScope.AGENT_WRITE)
   @ApiOperation({ summary: 'Pause an active run' })
   pauseRun(@CurrentUser() user: { id: string }, @Param('id') id: string) {
     return this.agentService.pauseRun(user.id, id);
   }
 
   @Post('runs/:id/resume')
-  @RequireScopes(ApiKeyScope.AGENT_WRITE)
   @ApiOperation({ summary: 'Resume a paused run' })
   resumeRun(@CurrentUser() user: { id: string }, @Param('id') id: string) {
     return this.agentService.resumeRun(user.id, id);
   }
 
   @Patch('runs/:id/settings')
-  @RequireScopes(ApiKeyScope.AGENT_WRITE)
   @ApiOperation({ summary: 'Save per-agent execution settings (persisted in DB, used on next execute)' })
   saveSettings(
     @CurrentUser() user: { id: string },
@@ -138,7 +123,6 @@ export class AgentController {
   }
 
   @Post('runs/:id/execute')
-  @RequireScopes(ApiKeyScope.AGENT_WRITE)
   @ApiOperation({
     summary: 'Queue the model execution for an agent run — returns immediately',
     description:
@@ -169,7 +153,6 @@ export class AgentController {
   // ---------------------------------------------------------------------------
 
   @Post('runs/:id/actions')
-  @RequireScopes(ApiKeyScope.AGENT_WRITE)
   @ApiOperation({ summary: 'Log a model action (called by the agent process)' })
   @ApiBody({
     schema: {
@@ -218,7 +201,6 @@ export class AgentController {
   }
 
   @Post('runs/:id/actions/batch')
-  @RequireScopes(ApiKeyScope.AGENT_WRITE)
   @ApiOperation({ summary: 'Bulk-insert actions from a completed backtest episode (single transaction)' })
   @ApiBody({
     schema: {
@@ -260,7 +242,6 @@ export class AgentController {
   }
 
   @Get('runs/:id/actions')
-  @RequireScopes(ApiKeyScope.AGENT_READ)
   @ApiOperation({ summary: 'Get the action log for an agent run (newest first)' })
   getActions(
     @CurrentUser() user: { id: string },

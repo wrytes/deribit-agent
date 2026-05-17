@@ -6,7 +6,6 @@ import { PrismaService } from '../../core/database/prisma.service';
 import { DeribitClientService } from '../deribit/deribit.client.service';
 import { MarketDataService } from '../../modules/market-data/market-data.service';
 import type { TelegramContext } from './session.types';
-import { ApiKeyScope } from '@prisma/client';
 import { Currency } from '@wrytlabs/deribit-api-client';
 
 function s(ctx: Context): TelegramContext {
@@ -38,9 +37,6 @@ export class TelegramUpdate implements OnModuleInit {
         { command: 'positions',  description: 'Open positions' },
         { command: 'orders',     description: 'Open orders' },
         { command: 'connect',    description: 'Link your Deribit credentials' },
-        { command: 'api_create', description: 'Generate a REST API key' },
-        { command: 'api_list',   description: 'List your active API keys' },
-        { command: 'api_revoke', description: 'Revoke an API key — /api_revoke <keyId>' },
       ]);
       this.logger.log('Telegram command menu registered');
     } catch (err) {
@@ -70,12 +66,10 @@ export class TelegramUpdate implements OnModuleInit {
         '/orders — open orders\n\n' +
         '⚙️ *Setup*\n' +
         '/status — account & connection\n' +
-        '/connect — link Deribit credentials\n' +
-        '/api\\_create — generate REST API key\n' +
-        '/api\\_list — list API keys\n' +
-        '/api\\_revoke <keyId> — revoke a key\n\n' +
+        '/connect — link Deribit credentials\n\n' +
         '🔬 *Platform (REST API)*\n' +
         'Data ingestion, training sessions, and agent runs are managed via REST API.\n' +
+        'Manage API keys at wrytes.io — use your wrytes-api token to authenticate.\n' +
         'Swagger docs: `GET /api`',
       { parse_mode: 'Markdown' },
     );
@@ -88,10 +82,9 @@ export class TelegramUpdate implements OnModuleInit {
 
     const { id: userId } = await this.authService.getOrCreateUser(BigInt(from.id), from.username);
 
-    const [deribitAccount, apiKeys] = await Promise.all([
+    const [deribitAccount] = await Promise.all([
       this.prisma.deribitAccount.findFirst({ where: { userId, isDefault: true } })
         .then((a) => a ?? this.prisma.deribitAccount.findFirst({ where: { userId } })),
-      this.prisma.apiKey.findMany({ where: { userId, revokedAt: null }, orderBy: { createdAt: 'desc' } }),
     ]);
 
     const lines: string[] = ['👤 *Account Status*\n'];
@@ -108,17 +101,7 @@ export class TelegramUpdate implements OnModuleInit {
       lines.push('Status: ❌ Not connected\nUse /connect to link your Deribit account.');
     }
 
-    const activeKeys = apiKeys.filter((k) => !k.expiresAt || k.expiresAt > new Date());
-    lines.push(`\n🔑 *API Keys* (${activeKeys.length} active)`);
-    if (activeKeys.length === 0) {
-      lines.push('No active keys. Use /api\\_create to generate one.');
-    } else {
-      for (const key of activeKeys.slice(0, 5)) {
-        const lastUsed = key.lastUsedAt ? `last used ${timeAgo(key.lastUsedAt)}` : 'never used';
-        lines.push(`\`${key.keyId}\` — ${lastUsed}`);
-      }
-      if (activeKeys.length > 5) lines.push(`_...and ${activeKeys.length - 5} more_`);
-    }
+    lines.push('\n🔑 *API Keys*\nManage your API keys at wrytes.io');
 
     await ctx.reply(lines.join('\n'), { parse_mode: 'Markdown' });
   }
@@ -149,82 +132,6 @@ export class TelegramUpdate implements OnModuleInit {
       await ctx.reply(lines.join('\n'), { parse_mode: 'Markdown' });
     } catch (err) {
       await ctx.reply(`❌ Error: ${err.message}`);
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // API key management
-  // ---------------------------------------------------------------------------
-
-  @Command('api_create')
-  async onApiCreate(@Ctx() ctx: Context) {
-    const from = s(ctx).from;
-    if (!from) return;
-
-    const { id: userId } = await this.authService.getOrCreateUser(BigInt(from.id), from.username);
-
-    const { token } = await this.authService.createMagicLink(userId, [
-      ApiKeyScope.ACCOUNT_READ,
-      ApiKeyScope.MARKET_READ,
-      ApiKeyScope.DATA_READ,
-      ApiKeyScope.DATA_WRITE,
-      ApiKeyScope.TRAINING_READ,
-      ApiKeyScope.TRAINING_WRITE,
-      ApiKeyScope.AGENT_READ,
-      ApiKeyScope.AGENT_WRITE,
-    ]);
-
-    await ctx.reply(
-      `🔑 *Magic Link Token*\n\n\`${token}\`\n\nVisit: \`/auth/verify?token=${token}\`\n\nExpires in 15 minutes`,
-      { parse_mode: 'Markdown' },
-    );
-  }
-
-  @Command('api_list')
-  async onApiList(@Ctx() ctx: Context) {
-    const from = s(ctx).from;
-    if (!from) return;
-
-    const { id: userId } = await this.authService.getOrCreateUser(BigInt(from.id), from.username);
-    const keys = await this.authService.listApiKeys(userId);
-
-    if (keys.length === 0) {
-      await ctx.reply('No active API keys. Use /api\\_create to generate one.', { parse_mode: 'Markdown' });
-      return;
-    }
-
-    const lines: string[] = [`🔑 *API Keys* (${keys.length})\n`];
-    for (const key of keys) {
-      const expires = key.expiresAt ? `expires ${key.expiresAt.toLocaleDateString()}` : 'no expiry';
-      const lastUsed = key.lastUsedAt ? `last used ${timeAgo(key.lastUsedAt)}` : 'never used';
-      const scopes = key.scopes.map((sc: string) => sc.toLowerCase().replace('_', ':')).join(', ');
-      lines.push(`\`${key.keyId}\`\n  ${expires} · ${lastUsed}\n  Scopes: ${scopes}`);
-    }
-    lines.push('\nTo revoke: /api\\_revoke \\<keyId\\>');
-
-    await ctx.reply(lines.join('\n'), { parse_mode: 'Markdown' });
-  }
-
-  @Command('api_revoke')
-  async onApiRevoke(@Ctx() ctx: Context) {
-    const tc = s(ctx);
-    const from = tc.from;
-    const message = tc.message;
-    if (!from || !message || !('text' in message)) return;
-
-    const keyId = (message as any).text.replace(/^\/api_revoke\s*/i, '').trim();
-    if (!keyId) {
-      await ctx.reply('Usage: /api\\_revoke \\<keyId\\>', { parse_mode: 'Markdown' });
-      return;
-    }
-
-    const { id: userId } = await this.authService.getOrCreateUser(BigInt(from.id), from.username);
-
-    try {
-      await this.authService.revokeApiKey(userId, keyId);
-      await ctx.reply(`✅ API key \`${keyId}\` revoked.`, { parse_mode: 'Markdown' });
-    } catch (err) {
-      await ctx.reply(`❌ ${err.message}`);
     }
   }
 

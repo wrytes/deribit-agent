@@ -1,24 +1,15 @@
-import {
-  Controller,
-  Get,
-  Query,
-  UseGuards,
-} from '@nestjs/common';
+import { Controller, Get, Query } from '@nestjs/common';
 import { ApiOperation, ApiQuery, ApiSecurity, ApiTags } from '@nestjs/swagger';
-import { ApiKeyGuard } from '../../common/guards/api-key.guard';
-import { RequireScopes } from '../../common/decorators/require-scopes.decorator';
-import { ApiKeyScope } from '@prisma/client';
 import { DataIngestionService, TRACKED_INSTRUMENTS } from './data-ingestion.service';
 
 @ApiTags('data')
 @ApiSecurity('api-key')
-@UseGuards(ApiKeyGuard)
 @Controller('data')
 export class DataIngestionController {
   constructor(private readonly dataIngestionService: DataIngestionService) {}
 
   @Get('status')
-  @RequireScopes(ApiKeyScope.DATA_READ)
+
   @ApiOperation({ summary: 'Pipeline status — tracked instruments and DB coverage' })
   async getStatus() {
     const [candles, options] = await Promise.all([
@@ -29,7 +20,7 @@ export class DataIngestionController {
   }
 
   @Get('candles')
-  @RequireScopes(ApiKeyScope.DATA_READ)
+
   @ApiOperation({ summary: 'Query stored OHLCV candles' })
   @ApiQuery({ name: 'instrument', example: 'BTC-PERPETUAL' })
   @ApiQuery({ name: 'resolution', example: '1D' })
@@ -53,7 +44,7 @@ export class DataIngestionController {
   }
 
   @Get('options')
-  @RequireScopes(ApiKeyScope.DATA_READ)
+
   @ApiOperation({ summary: 'Query stored option IV surface snapshots' })
   @ApiQuery({ name: 'currency', example: 'BTC' })
   @ApiQuery({ name: 'expiry', required: false, example: '28MAR25' })

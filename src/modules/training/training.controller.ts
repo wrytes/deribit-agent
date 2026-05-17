@@ -7,19 +7,14 @@ import {
   Patch,
   Post,
   Query,
-  UseGuards,
 } from '@nestjs/common';
 import { ApiBody, ApiOperation, ApiQuery, ApiSecurity, ApiTags } from '@nestjs/swagger';
-import { ApiKeyGuard } from '../../common/guards/api-key.guard';
-import { ScopesGuard } from '../../common/guards/scopes.guard';
-import { RequireScopes } from '../../common/decorators/require-scopes.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { ApiKeyScope, TrainingStatus } from '@prisma/client';
+import { TrainingStatus } from '@prisma/client';
 import { TrainingService, RiskProfile } from './training.service';
 
 @ApiTags('training')
 @ApiSecurity('api-key')
-@UseGuards(ApiKeyGuard, ScopesGuard)
 @Controller('training')
 export class TrainingController {
   constructor(private readonly trainingService: TrainingService) {}
@@ -29,7 +24,6 @@ export class TrainingController {
   // ---------------------------------------------------------------------------
 
   @Post('sessions')
-  @RequireScopes(ApiKeyScope.TRAINING_WRITE)
   @ApiOperation({ summary: 'Create and queue a new training session' })
   @ApiBody({
     schema: {
@@ -105,7 +99,6 @@ export class TrainingController {
   }
 
   @Get('sessions')
-  @RequireScopes(ApiKeyScope.TRAINING_READ)
   @ApiOperation({ summary: 'List training sessions (optionally filter by status)' })
   @ApiQuery({ name: 'status', required: false, enum: TrainingStatus })
   listSessions(@Query('status') status?: TrainingStatus) {
@@ -113,21 +106,18 @@ export class TrainingController {
   }
 
   @Get('sessions/:id')
-  @RequireScopes(ApiKeyScope.TRAINING_READ)
   @ApiOperation({ summary: 'Get a training session by ID' })
   getSession(@Param('id') id: string) {
     return this.trainingService.getSession(id);
   }
 
   @Post('sessions/:id/cancel')
-  @RequireScopes(ApiKeyScope.TRAINING_WRITE)
   @ApiOperation({ summary: 'Cancel a queued or running training session (sets status to CANCELLED)' })
   cancelSession(@Param('id') id: string) {
     return this.trainingService.cancelSession(id);
   }
 
   @Patch('sessions/:id')
-  @RequireScopes(ApiKeyScope.TRAINING_WRITE)
   @ApiOperation({ summary: 'Update session name or description' })
   @ApiBody({
     schema: {
@@ -146,7 +136,6 @@ export class TrainingController {
   }
 
   @Delete('sessions/:id')
-  @RequireScopes(ApiKeyScope.TRAINING_WRITE)
   @ApiOperation({
     summary: 'Hard-delete a session and all related data',
     description:
@@ -158,7 +147,6 @@ export class TrainingController {
   }
 
   @Post('sessions/:id/callback')
-  @RequireScopes(ApiKeyScope.TRAINING_WRITE)
   @ApiOperation({
     summary: 'Trainer sidecar callback — marks session completed/failed and registers model',
     description: 'Called by the Python trainer when training finishes. Requires TRAINING_WRITE scope.',
@@ -199,7 +187,6 @@ export class TrainingController {
   // ---------------------------------------------------------------------------
 
   @Get('queue')
-  @RequireScopes(ApiKeyScope.TRAINING_READ)
   @ApiOperation({ summary: 'BullMQ queue stats (waiting / active / completed / failed)' })
   queueStats() {
     return this.trainingService.getQueueStats();
@@ -210,21 +197,18 @@ export class TrainingController {
   // ---------------------------------------------------------------------------
 
   @Get('models')
-  @RequireScopes(ApiKeyScope.TRAINING_READ)
   @ApiOperation({ summary: 'List all trained models with their evaluation metrics' })
   listModels() {
     return this.trainingService.listModels();
   }
 
   @Get('models/:id')
-  @RequireScopes(ApiKeyScope.TRAINING_READ)
   @ApiOperation({ summary: 'Get a trained model by ID' })
   getModel(@Param('id') id: string) {
     return this.trainingService.getModel(id);
   }
 
   @Patch('models/:id')
-  @RequireScopes(ApiKeyScope.TRAINING_WRITE)
   @ApiOperation({ summary: 'Update model name' })
   @ApiBody({
     schema: {
@@ -239,7 +223,6 @@ export class TrainingController {
   }
 
   @Post('models')
-  @RequireScopes(ApiKeyScope.TRAINING_WRITE)
   @ApiOperation({ summary: 'Manually register an externally trained model' })
   @ApiBody({
     schema: {
