@@ -40,8 +40,8 @@ export class TrainingController {
         allowedStrategies: {
           type: 'array',
           items: { type: 'string' },
-          example: ['STRANGLE', 'DELTA_NEUTRAL'],
-          description: 'Whitelist of strategy/action types the model may use during training. Options: STRANGLE, DELTA_NEUTRAL, COVERED_CALL, CASH_SECURED_PUT, IRON_CONDOR, STRADDLE',
+          example: ['strangle', 'delta_neutral'],
+          description: 'Whitelist of strategy/action types the model may use during training',
         },
         riskProfile: {
           type: 'object',

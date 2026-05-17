@@ -1,14 +1,3 @@
-enum StrategyType {
-  WHEEL
-  COVERED_CALL
-  CASH_SECURED_PUT
-  IRON_CONDOR
-  STRANGLE
-  STRADDLE
-  DELTA_NEUTRAL
-  CUSTOM
-}
-
 enum StrategyStatus {
   DRAFT
   ACTIVE
@@ -20,7 +9,7 @@ model Strategy {
   id          String         @id @default(cuid())
   userId      String
   name        String
-  type        StrategyType
+  type        String
   status      StrategyStatus @default(DRAFT)
   description String?
 

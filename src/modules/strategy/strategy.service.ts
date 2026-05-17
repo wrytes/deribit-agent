@@ -1,10 +1,10 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../core/database/prisma.service';
-import { StrategyStatus, StrategyType } from '@prisma/client';
+import { StrategyStatus } from '@prisma/client';
 
 export interface CreateStrategyDto {
   name: string;
-  type: StrategyType;
+  type: string;
   description?: string;
   allocationBtc: number;
   params?: Record<string, any>;
