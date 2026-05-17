@@ -1,0 +1,63 @@
+/// Hourly snapshot of market-wide metrics per currency (BTC, ETH).
+model MarketSnapshot {
+  id           String   @id @default(cuid())
+  currency     String
+  timestamp    DateTime @default(now())
+  indexPrice   Decimal
+  dvolIndex    Decimal?
+  rv30d        Decimal?
+  ivRank       Decimal?
+  ivPercentile Decimal?
+  markIv       Decimal? // perpetual mark implied volatility
+
+  @@index([currency, timestamp])
+}
+
+/// OHLCV candle stored per instrument and resolution.
+/// resolution values mirror Deribit: 1 | 3 | 5 | 10 | 15 | 30 | 60 | 120 | 180 | 360 | 720 | 1D | 1W
+model Candle {
+  id         String   @id @default(cuid())
+  instrument String   // e.g. BTC-PERPETUAL, ETH-PERPETUAL, BTC_USDC
+  resolution String   // e.g. 60, 1D
+  timestamp  DateTime // candle open timestamp (UTC)
+  open       Decimal
+  high       Decimal
+  low        Decimal
+  close      Decimal
+  volume     Decimal  @default(0)
+  source     String   @default("deribit")
+
+  @@unique([instrument, resolution, timestamp])
+  @@index([instrument, resolution, timestamp])
+}
+
+/// Point-in-time snapshot of a single option instrument (IV surface row).
+model OptionSnapshot {
+  id              String   @id @default(cuid())
+  capturedAt      DateTime @default(now())
+  instrument      String   // e.g. BTC-28MAR25-70000-C
+  currency        String   // BTC | ETH
+  expiry          String   // e.g. 28MAR25
+  strike          Decimal
+  optionType      String   // call | put
+
+  markIv          Decimal?
+  bidIv           Decimal?
+  askIv           Decimal?
+  markPrice       Decimal? // in BTC
+  bidPrice        Decimal?
+  askPrice        Decimal?
+  underlyingPrice Decimal? // BTC index price at capture time
+
+  delta           Decimal?
+  gamma           Decimal?
+  theta           Decimal?
+  vega            Decimal?
+  rho             Decimal?
+
+  openInterest    Decimal?
+  volume24h       Decimal?
+
+  @@index([currency, expiry, capturedAt])
+  @@index([instrument, capturedAt])
+}

@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Deribit Agent — Candle Chart</title>
+  <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html, body {
+      height: 100%;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #f6f8fa;
+      color: #1f2328;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      padding: 14px 20px;
+      border-bottom: 1px solid #d0d7de;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: #ffffff;
+    }
+    header h1 { font-size: 15px; font-weight: 600; color: #1f2328; }
+    header span { font-size: 12px; color: #656d76; }
+
+    .toolbar {
+      padding: 10px 20px;
+      border-bottom: 1px solid #d0d7de;
+      background: #ffffff;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: flex-end;
+    }
+
+    .field { display: flex; flex-direction: column; gap: 3px; }
+    .field label { font-size: 11px; color: #656d76; text-transform: uppercase; letter-spacing: 0.5px; }
+
+    input, select {
+      background: #f6f8fa;
+      border: 1px solid #d0d7de;
+      color: #1f2328;
+      border-radius: 6px;
+      padding: 5px 9px;
+      font-size: 13px;
+      height: 32px;
+      outline: none;
+    }
+    input:focus, select:focus { border-color: #0969da; box-shadow: 0 0 0 3px rgba(9,105,218,.1); }
+    input[type="text"] { width: 220px; }
+    input[type="date"] { width: 140px; }
+
+    button {
+      height: 32px;
+      padding: 0 14px;
+      border-radius: 6px;
+      border: none;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+    }
+    .btn-primary { background: #1a7f37; color: #fff; }
+    .btn-primary:hover { background: #1a7f37cc; }
+    .btn-secondary { background: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; }
+    .btn-secondary:hover { background: #eaeef2; }
+
+    .stats {
+      padding: 6px 20px;
+      font-size: 12px;
+      color: #656d76;
+      background: #ffffff;
+      border-bottom: 1px solid #d0d7de;
+      min-height: 28px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .stats .tag { color: #0969da; font-weight: 600; }
+    .stats .up   { color: #1a7f37; }
+    .stats .down { color: #cf222e; }
+
+    #chart-container {
+      flex: 1;
+      min-height: 0;   /* critical: lets flex shrink below content height */
+      position: relative;
+    }
+    #chart { width: 100%; height: 100%; }
+
+    #volume-container {
+      height: 100px;
+      position: relative;
+      border-top: 1px solid #d0d7de;
+    }
+    #volume-chart { width: 100%; height: 100%; }
+
+    .empty {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #656d76;
+      font-size: 14px;
+    }
+
+    .error-bar {
+      background: #ffebe9;
+      color: #cf222e;
+      border-top: 1px solid #cf222e3d;
+      padding: 8px 20px;
+      font-size: 13px;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Deribit Agent — Candle Chart</h1>
+  <span>reads from local DB via REST API</span>
+</header>
+
+<div class="toolbar">
+  <div class="field">
+    <label>API Key</label>
+    <input type="text" id="apiKey" placeholder="rw_prod_keyId.secret" />
+  </div>
+  <div class="field">
+    <label>API URL</label>
+    <input type="text" id="apiUrl" value="http://localhost:3030" style="width:180px" />
+  </div>
+  <div class="field">
+    <label>Instrument</label>
+    <select id="instrument">
+      <optgroup label="Perpetual">
+        <option>BTC-PERPETUAL</option>
+        <option>ETH-PERPETUAL</option>
+      </optgroup>
+      <optgroup label="Spot Index">
+        <option>btc_usd</option>
+        <option>eth_usd</option>
+      </optgroup>
+      <optgroup label="DVOL (IV Index)">
+        <option>btc_dvol</option>
+        <option>eth_dvol</option>
+      </optgroup>
+    </select>
+  </div>
+  <div class="field">
+    <label>Resolution</label>
+    <select id="resolution">
+      <option value="1D">1D</option>
+      <option value="60">1h</option>
+    </select>
+  </div>
+  <div class="field">
+    <label>From</label>
+    <input type="date" id="from" />
+  </div>
+  <div class="field">
+    <label>To</label>
+    <input type="date" id="to" />
+  </div>
+  <button class="btn-primary" onclick="load()">Load</button>
+  <button class="btn-secondary" onclick="resetDates()">Reset dates</button>
+</div>
+
+<div class="stats" id="stats">
+  <span>Enter your API key and press <strong>Load</strong></span>
+</div>
+<div class="error-bar" id="error"></div>
+
+<div id="chart-container">
+  <div id="chart"></div>
+  <div class="empty" id="empty">No data loaded</div>
+</div>
+<div id="volume-container">
+  <div id="volume-chart"></div>
+</div>
+
+<script>
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+let candleChart = null;
+let volumeChart = null;
+let candleSeries = null;
+let volumeSeries = null;
+
+// ---------------------------------------------------------------------------
+// Init charts
+// ---------------------------------------------------------------------------
+function initCharts() {
+  const opts = {
+    layout: { background: { color: '#ffffff' }, textColor: '#1f2328' },
+    grid: { vertLines: { color: '#eaeef2' }, horzLines: { color: '#eaeef2' } },
+    crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
+    rightPriceScale: { borderColor: '#d0d7de' },
+    timeScale: { borderColor: '#d0d7de', timeVisible: true },
+  };
+
+  const cEl = document.getElementById('chart');
+  candleChart = LightweightCharts.createChart(cEl, { ...opts, autoSize: true });
+
+  candleSeries = candleChart.addCandlestickSeries({
+    upColor:       '#1a7f37',
+    downColor:     '#cf222e',
+    borderVisible: false,
+    wickUpColor:   '#1a7f37',
+    wickDownColor: '#cf222e',
+  });
+
+  const vEl = document.getElementById('volume-chart');
+  volumeChart = LightweightCharts.createChart(vEl, {
+    ...opts,
+    autoSize: true,
+    leftPriceScale: { visible: false },
+    rightPriceScale: { visible: true, scaleMargins: { top: 0.1, bottom: 0 } },
+    timeScale: { visible: false },
+  });
+
+  volumeSeries = volumeChart.addHistogramSeries({
+    priceFormat: { type: 'volume' },
+    priceScaleId: 'right',
+  });
+
+  // Sync time scales
+  candleChart.timeScale().subscribeVisibleLogicalRangeChange(r => {
+    if (r) volumeChart.timeScale().setVisibleLogicalRange(r);
+  });
+  volumeChart.timeScale().subscribeVisibleLogicalRangeChange(r => {
+    if (r) candleChart.timeScale().setVisibleLogicalRange(r);
+  });
+
+  // Crosshair tooltip
+  candleChart.subscribeCrosshairMove(param => {
+    if (!param?.seriesData?.size) return;
+    const d = param.seriesData.get(candleSeries);
+    if (!d) return;
+    const pct = ((d.close - d.open) / d.open * 100).toFixed(2);
+    const cls = d.close >= d.open ? 'up' : 'down';
+    document.getElementById('stats').innerHTML =
+      `<span class="tag">${document.getElementById('instrument').value}</span>` +
+      `&nbsp;O <span>${fmt(d.open)}</span>` +
+      `&nbsp;H <span>${fmt(d.high)}</span>` +
+      `&nbsp;L <span>${fmt(d.low)}</span>` +
+      `&nbsp;C <span class="${cls}">${fmt(d.close)}</span>` +
+      `&nbsp;<span class="${cls}">${pct}%</span>`;
+  });
+
+  // autoSize: true handles resize automatically
+}
+
+function fmt(n) {
+  return n >= 1000 ? n.toLocaleString(undefined, { maximumFractionDigits: 2 })
+                   : n.toPrecision(5);
+}
+
+// ---------------------------------------------------------------------------
+// Load data
+// ---------------------------------------------------------------------------
+async function load() {
+  const key   = document.getElementById('apiKey').value.trim();
+  const base  = document.getElementById('apiUrl').value.replace(/\/$/, '');
+  const inst  = document.getElementById('instrument').value;
+  const res   = document.getElementById('resolution').value;
+  const from  = document.getElementById('from').value;
+  const to    = document.getElementById('to').value;
+
+  setError('');
+
+  if (!key) { setError('API key is required'); return; }
+
+  const params = new URLSearchParams({
+    instrument: inst,
+    resolution: res,
+    limit: '5000',
+    ...(from ? { from: from + 'T00:00:00.000Z' } : {}),
+    ...(to   ? { to:   to   + 'T23:59:59.999Z' } : {}),
+  });
+
+  let rows;
+  try {
+    const r = await fetch(`${base}/data/candles?${params}`, {
+      headers: { 'x-api-key': key },
+    });
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      throw new Error(body.message || `HTTP ${r.status}`);
+    }
+    rows = await r.json();
+  } catch (e) {
+    setError(e.message);
+    return;
+  }
+
+  if (!rows.length) {
+    setError(`No candles found for ${inst} @ ${res} in the selected range. The DB may still be backfilling.`);
+    return;
+  }
+
+  const candles = rows.map(r => ({
+    time:  Math.floor(new Date(r.timestamp).getTime() / 1000),
+    open:  +r.open,
+    high:  +r.high,
+    low:   +r.low,
+    close: +r.close,
+  }));
+
+  const volumes = rows.map((r, i) => ({
+    time:  Math.floor(new Date(r.timestamp).getTime() / 1000),
+    value: +r.volume,
+    color: +r.close >= +r.open ? '#1a7f3755' : '#cf222e55',
+  }));
+
+  candleSeries.setData(candles);
+  volumeSeries.setData(volumes);
+  candleChart.timeScale().fitContent();
+  volumeChart.timeScale().fitContent();
+
+  document.getElementById('empty').style.display = 'none';
+
+  const first = candles[0], last = candles[candles.length - 1];
+  const totalPct = ((last.close - first.open) / first.open * 100).toFixed(2);
+  const cls = totalPct >= 0 ? 'up' : 'down';
+  document.getElementById('stats').innerHTML =
+    `<span class="tag">${inst} ${res}</span>` +
+    `&nbsp;${rows.length} candles` +
+    `&nbsp;·&nbsp;${new Date(rows[0].timestamp).toLocaleDateString()} → ${new Date(rows[rows.length-1].timestamp).toLocaleDateString()}` +
+    `&nbsp;·&nbsp;Total <span class="${cls}">${totalPct}%</span>`;
+}
+
+function setError(msg) {
+  const el = document.getElementById('error');
+  el.textContent = msg;
+  el.style.display = msg ? 'block' : 'none';
+}
+
+function resetDates() {
+  document.getElementById('from').value = '';
+  document.getElementById('to').value   = '';
+}
+
+// ---------------------------------------------------------------------------
+// Restore API key from localStorage
+// ---------------------------------------------------------------------------
+window.addEventListener('load', () => {
+  const saved = localStorage.getItem('deribit_agent_apikey');
+  if (saved) document.getElementById('apiKey').value = saved;
+
+  document.getElementById('apiKey').addEventListener('change', e => {
+    localStorage.setItem('deribit_agent_apikey', e.target.value.trim());
+  });
+
+  // Default date range: last 90 days
+  const to   = new Date();
+  const from = new Date(to);
+  from.setDate(from.getDate() - 90);
+  document.getElementById('to').value   = to.toISOString().slice(0, 10);
+  document.getElementById('from').value = from.toISOString().slice(0, 10);
+
+  initCharts();
+});
+</script>
+</body>
+</html>

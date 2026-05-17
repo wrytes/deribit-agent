@@ -2,9 +2,10 @@ import {
   Controller,
   Get,
   Post,
+  Patch,
   Delete,
   Body,
-  UseGuards,
+  Param,
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
@@ -15,38 +16,49 @@ import {
   ApiSecurity,
 } from '@nestjs/swagger';
 import { DeribitAccountService } from './deribit-account.service';
-import { UpsertDeribitAccountDto } from './deribit-account.dto';
-import { ApiKeyGuard } from '../../common/guards/api-key.guard';
+import { CreateDeribitAccountDto, UpdateDeribitAccountDto } from './deribit-account.dto';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import type { User } from '@prisma/client';
 
 @Controller('deribit-account')
-@ApiTags('Deribit Account')
-@UseGuards(ApiKeyGuard)
+@ApiTags('deribit-account')
 @ApiSecurity('api-key')
 export class DeribitAccountController {
   constructor(private readonly deribitAccountService: DeribitAccountService) {}
 
-  @Post()
-  @ApiOperation({ summary: 'Save or update Deribit credentials' })
-  @ApiResponse({ status: 201, description: 'Credentials saved' })
-  async upsert(@CurrentUser() user: User, @Body() dto: UpsertDeribitAccountDto) {
-    return this.deribitAccountService.upsert(user.id, dto);
-  }
-
   @Get()
-  @ApiOperation({ summary: 'Get Deribit account info (never exposes secret)' })
-  @ApiResponse({ status: 200, description: 'Deribit account info' })
-  @ApiResponse({ status: 404, description: 'No credentials configured' })
-  async get(@CurrentUser() user: User) {
-    return this.deribitAccountService.get(user.id);
+  @ApiOperation({ summary: 'List all Deribit accounts (secrets never exposed)' })
+  @ApiResponse({ status: 200, description: 'List of accounts' })
+  list(@CurrentUser() user: User) {
+    return this.deribitAccountService.list(user.id);
   }
 
-  @Delete()
+  @Post()
+  @ApiOperation({ summary: 'Add a Deribit account' })
+  @ApiResponse({ status: 201, description: 'Account created' })
+  create(@CurrentUser() user: User, @Body() dto: CreateDeribitAccountDto) {
+    return this.deribitAccountService.create(user.id, dto);
+  }
+
+  @Patch(':id')
+  @ApiOperation({ summary: 'Update a Deribit account' })
+  @ApiResponse({ status: 200, description: 'Account updated' })
+  update(@CurrentUser() user: User, @Param('id') id: string, @Body() dto: UpdateDeribitAccountDto) {
+    return this.deribitAccountService.update(user.id, id, dto);
+  }
+
+  @Delete(':id')
   @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiOperation({ summary: 'Remove Deribit credentials' })
-  @ApiResponse({ status: 204, description: 'Credentials removed' })
-  async remove(@CurrentUser() user: User) {
-    await this.deribitAccountService.remove(user.id);
+  @ApiOperation({ summary: 'Remove a Deribit account (blocked if active runs reference it)' })
+  @ApiResponse({ status: 204, description: 'Account removed' })
+  remove(@CurrentUser() user: User, @Param('id') id: string) {
+    return this.deribitAccountService.remove(user.id, id);
+  }
+
+  @Post(':id/default')
+  @ApiOperation({ summary: 'Set an account as the default for live runs' })
+  @ApiResponse({ status: 200, description: 'Default updated' })
+  setDefault(@CurrentUser() user: User, @Param('id') id: string) {
+    return this.deribitAccountService.setDefault(user.id, id);
   }
 }

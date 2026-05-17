@@ -6,7 +6,7 @@ export const validationSchema = Joi.object({
 		.valid('development', 'production', 'test')
 		.default('development'),
 	PORT: Joi.number().default(3031),
-	API_KEY_SECRET: Joi.string().min(32).required(),
+	WRYTES_API_URL: Joi.string().uri().default('http://localhost:3000'),
 
 	// Database
 	DATABASE_URL: Joi.string().required(),
@@ -21,10 +21,7 @@ export const validationSchema = Joi.object({
 	DERIBIT_CLIENT_SECRET: Joi.string().allow('').optional(),
 	DERIBIT_BASE_URL: Joi.string().default('wss://www.deribit.com/ws/api/v2'),
 
-	// AI
-	ANTHROPIC_API_KEY: Joi.string().allow('').optional(),
-
-	// Telegram
+	// Telegram (optional — agent runs without it)
 	TELEGRAM_BOT_TOKEN: Joi.string().allow('').optional(),
 	TELEGRAM_WEBHOOK_DOMAIN: Joi.string().allow('').optional(),
 	TELEGRAM_WEBHOOK_PATH: Joi.string().allow('').default('').optional(),

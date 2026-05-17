@@ -24,6 +24,16 @@ export class TradingService {
     return this.deribitClientService.unwrap(res);
   }
 
+  async getPositions(userId: string, currency: string, kind?: string) {
+    const client = await this.deribitClientService.getClient(userId);
+    const res = await (client as any).send(
+      '/private/get_positions',
+      ['account:read'],
+      { currency, ...(kind ? { kind } : {}) },
+    );
+    return this.deribitClientService.unwrap(res);
+  }
+
   async getOpenOrdersByCurrency(userId: string, currency: string, kind?: string, type?: string) {
     const client = await this.deribitClientService.getClient(userId);
     const res = await client.trading.getOpenOrdersByCurrency({ currency, kind, type });

@@ -1,0 +1,68 @@
+enum TrainingStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+/// A training job that produces a TrainedModel.
+model TrainingSession {
+  id          String         @id @default(cuid())
+  name        String
+  description String?
+  status      TrainingStatus @default(QUEUED)
+
+  // Dataset config
+  currency   String   // BTC | ETH
+  dataFrom   DateTime
+  dataTo     DateTime
+  resolution String   @default("1D")
+
+  // Model config
+  algorithm   String @default("PPO") // PPO | DQN | A2C
+  hyperparams Json   @default("{}")
+
+  // Runtime
+  jobId        String?
+  startedAt    DateTime?
+  completedAt  DateTime?
+  errorMessage String?
+
+  // Results
+  totalTimesteps Int?
+  finalReward    Decimal?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  model     TrainedModel?
+  agentRuns AgentRun[]
+
+  @@index([status, createdAt])
+}
+
+/// Model artifact metadata produced by a completed TrainingSession.
+model TrainedModel {
+  id        String @id @default(cuid())
+  sessionId String @unique
+  name      String
+
+  storagePath String  // local fs path or S3 key
+  storageType String  @default("local") // local | s3
+  sizeBytes   Int?
+
+  // Evaluation metrics
+  meanReward  Decimal?
+  stdReward   Decimal?
+  sharpeRatio Decimal?
+  maxDrawdown Decimal?
+  winRate     Decimal?
+
+  metadata  Json     @default("{}")
+  createdAt DateTime @default(now())
+
+  session TrainingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
+}

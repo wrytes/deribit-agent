@@ -6,43 +6,34 @@ import {
   Body,
   Query,
   Param,
-  UseGuards,
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiQuery, ApiSecurity, ApiParam } from '@nestjs/swagger';
 import { TradingService } from './trading.service';
 import { TradingBuyDto, TradingSellDto } from './trading.dto';
-import { ApiKeyGuard } from '../../common/guards/api-key.guard';
-import { ScopesGuard } from '../../common/guards/scopes.guard';
-import { RequireScopes } from '../../common/decorators/require-scopes.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { ApiKeyScope } from '@prisma/client';
 import type { User } from '@prisma/client';
 
 @Controller('trading')
-@ApiTags('Trading')
-@UseGuards(ApiKeyGuard, ScopesGuard)
+@ApiTags('trading')
 @ApiSecurity('api-key')
 export class TradingController {
   constructor(private readonly tradingService: TradingService) {}
 
   @Post('buy')
-  @RequireScopes(ApiKeyScope.TRADING_WRITE)
   @ApiOperation({ summary: 'Place a buy order' })
   async buy(@CurrentUser() user: User, @Body() dto: TradingBuyDto) {
     return this.tradingService.buy(user.id, dto);
   }
 
   @Post('sell')
-  @RequireScopes(ApiKeyScope.TRADING_WRITE)
   @ApiOperation({ summary: 'Place a sell order' })
   async sell(@CurrentUser() user: User, @Body() dto: TradingSellDto) {
     return this.tradingService.sell(user.id, dto);
   }
 
   @Delete('orders/:orderId')
-  @RequireScopes(ApiKeyScope.TRADING_WRITE)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Cancel an order' })
   @ApiParam({ name: 'orderId', type: String })
@@ -50,8 +41,19 @@ export class TradingController {
     return this.tradingService.cancel(user.id, orderId);
   }
 
+  @Get('positions')
+  @ApiOperation({ summary: 'Get open positions by currency' })
+  @ApiQuery({ name: 'currency', required: true })
+  @ApiQuery({ name: 'kind', required: false, description: 'future | option | spot' })
+  async getPositions(
+    @CurrentUser() user: User,
+    @Query('currency') currency: string,
+    @Query('kind') kind?: string,
+  ) {
+    return this.tradingService.getPositions(user.id, currency, kind);
+  }
+
   @Get('orders')
-  @RequireScopes(ApiKeyScope.TRADING_READ)
   @ApiOperation({ summary: 'Get open orders by currency' })
   @ApiQuery({ name: 'currency', required: true })
   @ApiQuery({ name: 'kind', required: false })
@@ -66,7 +68,6 @@ export class TradingController {
   }
 
   @Get('orders/instrument/:name')
-  @RequireScopes(ApiKeyScope.TRADING_READ)
   @ApiOperation({ summary: 'Get open orders by instrument' })
   @ApiParam({ name: 'name', type: String })
   @ApiQuery({ name: 'type', required: false })
@@ -79,7 +80,6 @@ export class TradingController {
   }
 
   @Get('orders/:orderId')
-  @RequireScopes(ApiKeyScope.TRADING_READ)
   @ApiOperation({ summary: 'Get order state' })
   @ApiParam({ name: 'orderId', type: String })
   async getOrderState(@CurrentUser() user: User, @Param('orderId') orderId: string) {

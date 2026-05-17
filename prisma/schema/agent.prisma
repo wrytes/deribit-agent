@@ -1,0 +1,90 @@
+enum AgentRunType {
+  BACKTEST
+  PAPER
+  LIVE
+}
+
+enum AgentRunStatus {
+  ACTIVE
+  PAUSED
+  STOPPED
+  COMPLETED
+  ERROR
+}
+
+/// A backtest, paper-trading, or live run of a trained model.
+model AgentRun {
+  id        String         @id @default(cuid())
+  userId    String
+  sessionId String?        // which TrainingSession/model powers this run
+  name      String
+  runType   AgentRunType   @default(PAPER)
+  status    AgentRunStatus @default(ACTIVE)
+
+  currency         String  // BTC | ETH
+  deribitAccountId String? // required for LIVE runs
+
+  initialCapitalBtc Decimal
+  currentCapitalBtc Decimal?
+
+  startedAt  DateTime  @default(now())
+  stoppedAt  DateTime?
+
+  totalActions     Int      @default(0)
+  realizedPnlBtc   Decimal  @default(0)
+  unrealizedPnlBtc Decimal?
+
+  notes             String?
+  executionSettings Json    @default("{}")
+  paperState        Json?   // PAPER runs only: serialised env state
+  liveState         Json?   // LIVE runs only: open positions with real Deribit instrument names + fill prices
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session        TrainingSession? @relation(fields: [sessionId], references: [id])
+  deribitAccount DeribitAccount?  @relation(fields: [deribitAccountId], references: [id])
+  actions        AgentAction[]
+
+  @@index([userId, status])
+  @@index([status, createdAt])
+}
+
+/// A single accounting entry for an AgentRun.
+/// actionType values:
+///   settlement_init       — episode start, initial balance recorded
+///   settlement_unrealized — daily mark-to-market
+///   settlement_expired    — option expired; pnlBtc = lifetime realized P&L
+///   open                  — short option opened; pnlBtc = null
+///   close                 — position bought back; pnlBtc = lifetime realized P&L
+model AgentAction {
+  id    String @id @default(cuid())
+  runId String
+
+  timestamp  DateTime @default(now())
+  actionType String
+
+  instrument String?
+  quantity   Decimal?
+  price      Decimal?
+  orderId    String? // Deribit order_id (live runs only)
+
+  // Market state at decision time
+  btcPrice Decimal?
+  delta    Decimal?
+  ivRank   Decimal?
+
+  executedPrice    Decimal? // original premium per unit
+  pnlBtc           Decimal? // lifetime realized P&L (settlement_expired, close)
+  feeBtc           Decimal? // trading fee paid in BTC
+  thetaBtc         Decimal? // daily time decay in BTC/unit
+  cashflowBtc      Decimal? // gross BTC in (+open) or out (−close/expired) before fees
+  equityBtc        Decimal? // margin − Σ(mktPrem × size) at event time
+  marginBalanceBtc Decimal? // actual cash margin
+  reason           String?  // model explanation
+
+  run AgentRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([runId, timestamp])
+}

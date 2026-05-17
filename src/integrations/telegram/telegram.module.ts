@@ -6,9 +6,7 @@ import { TelegramUpdate } from './telegram.update';
 import { TelegramController } from './telegram.controller';
 import { AuthModule } from '../../modules/auth/auth.module';
 import { DeribitModule } from '../deribit/deribit.module';
-import { AiModule } from '../ai/ai.module';
 import { MarketDataModule } from '../../modules/market-data/market-data.module';
-import { StrategyModule } from '../../modules/strategy/strategy.module';
 import { session } from 'telegraf';
 import { Redis } from 'ioredis';
 
@@ -73,9 +71,7 @@ function createIoRedisStore<T>(client: Redis, ttlSeconds: number) {
     }),
     AuthModule,
     DeribitModule,
-    AiModule,
     MarketDataModule,
-    StrategyModule,
   ],
   controllers: [TelegramController],
   providers: [TelegramService, TelegramUpdate],
