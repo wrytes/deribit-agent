@@ -3,7 +3,7 @@ import { PrismaService } from '../../core/database/prisma.service';
 import {
 	createDeribitClientPublic,
 	DeribitApiClient,
-} from '@wrytlabs/deribit-api-client';
+} from '@wrytes/deribit-api-client';
 
 export interface BackfillDto {
 	instrument: string;
@@ -80,7 +80,12 @@ const DERIBIT_PUBLIC_REST = 'https://www.deribit.com/api/v2/public';
 
 const DVOL_INSTRUMENTS = new Set(['btc_dvol', 'eth_dvol']);
 const SPOT_INSTRUMENTS = new Set(['btc_usd', 'eth_usd']);
-const DVOL_RES: Record<string, string> = { '60': '3600', '360': '21600', '1D': '86400', '1W': '604800' };
+const DVOL_RES: Record<string, string> = {
+	'60': '3600',
+	'360': '21600',
+	'1D': '86400',
+	'1W': '604800',
+};
 
 @Injectable()
 export class DataIngestionService implements OnModuleInit {
@@ -140,36 +145,79 @@ export class DataIngestionService implements OnModuleInit {
 
 		// Spot index: single paginated fetch, no chunking
 		if (SPOT_INSTRUMENTS.has(dto.instrument)) {
-			const data = await this.fetchDeliveryPrices(dto.instrument, fromTs, toTs);
-			let inserted = 0, skipped = 0;
+			const data = await this.fetchDeliveryPrices(
+				dto.instrument,
+				fromTs,
+				toTs,
+			);
+			let inserted = 0,
+				skipped = 0;
 			if (data) {
 				for (let i = 0; i < data.ticks.length; i++) {
 					const timestamp = new Date(data.ticks[i]);
 					try {
 						await this.prisma.candle.upsert({
-							where: { instrument_resolution_timestamp: { instrument: dto.instrument, resolution: dto.resolution, timestamp } },
+							where: {
+								instrument_resolution_timestamp: {
+									instrument: dto.instrument,
+									resolution: dto.resolution,
+									timestamp,
+								},
+							},
 							update: {},
-							create: { instrument: dto.instrument, resolution: dto.resolution, timestamp, open: data.open[i], high: data.high[i], low: data.low[i], close: data.close[i], volume: 0 },
+							create: {
+								instrument: dto.instrument,
+								resolution: dto.resolution,
+								timestamp,
+								open: data.open[i],
+								high: data.high[i],
+								low: data.low[i],
+								close: data.close[i],
+								volume: 0,
+							},
 						});
 						inserted++;
-					} catch { skipped++; }
+					} catch {
+						skipped++;
+					}
 				}
 			}
-			this.logger.log(`Backfill complete: ${dto.instrument}@${dto.resolution} — ${inserted} inserted, ${skipped} skipped`);
-			return { instrument: dto.instrument, resolution: dto.resolution, inserted, skipped, fromTs, toTs };
+			this.logger.log(
+				`Backfill complete: ${dto.instrument}@${dto.resolution} — ${inserted} inserted, ${skipped} skipped`,
+			);
+			return {
+				instrument: dto.instrument,
+				resolution: dto.resolution,
+				inserted,
+				skipped,
+				fromTs,
+				toTs,
+			};
 		}
 
 		// DVOL and TradingView: chunked fetch
 		const maxRange = MAX_RANGE_MS[dto.resolution] ?? 60 * 86_400_000;
 		const isDvol = DVOL_INSTRUMENTS.has(dto.instrument);
-		let inserted = 0, skipped = 0, cursor = fromTs;
+		let inserted = 0,
+			skipped = 0,
+			cursor = fromTs;
 
 		while (cursor < toTs) {
 			const chunkEnd = Math.min(cursor + maxRange, toTs);
 
 			const data = isDvol
-				? await this.fetchDvolChunk(dto.instrument, dto.resolution, cursor, chunkEnd)
-				: await this.fetchChartData(dto.instrument, dto.resolution, cursor, chunkEnd);
+				? await this.fetchDvolChunk(
+						dto.instrument,
+						dto.resolution,
+						cursor,
+						chunkEnd,
+					)
+				: await this.fetchChartData(
+						dto.instrument,
+						dto.resolution,
+						cursor,
+						chunkEnd,
+					);
 
 			if (data?.ticks?.length) {
 				const { ticks, open, high, low, close, volume } = data;
@@ -177,25 +225,51 @@ export class DataIngestionService implements OnModuleInit {
 					const timestamp = new Date(ticks[i]);
 					try {
 						await this.prisma.candle.upsert({
-							where: { instrument_resolution_timestamp: { instrument: dto.instrument, resolution: dto.resolution, timestamp } },
+							where: {
+								instrument_resolution_timestamp: {
+									instrument: dto.instrument,
+									resolution: dto.resolution,
+									timestamp,
+								},
+							},
 							update: {},
-							create: { instrument: dto.instrument, resolution: dto.resolution, timestamp, open: open[i], high: high[i], low: low[i], close: close[i], volume: volume?.[i] ?? 0 },
+							create: {
+								instrument: dto.instrument,
+								resolution: dto.resolution,
+								timestamp,
+								open: open[i],
+								high: high[i],
+								low: low[i],
+								close: close[i],
+								volume: volume?.[i] ?? 0,
+							},
 						});
 						inserted++;
-					} catch { skipped++; }
+					} catch {
+						skipped++;
+					}
 				}
 				this.logger.debug(
 					`Candle chunk [${dto.instrument} ${dto.resolution}] ` +
-					`${new Date(cursor).toISOString().slice(0, 10)} → ${new Date(chunkEnd).toISOString().slice(0, 10)}: ` +
-					`+${data.ticks.length} rows`,
+						`${new Date(cursor).toISOString().slice(0, 10)} → ${new Date(chunkEnd).toISOString().slice(0, 10)}: ` +
+						`+${data.ticks.length} rows`,
 				);
 			}
 
 			cursor = chunkEnd;
 		}
 
-		this.logger.log(`Backfill complete: ${dto.instrument}@${dto.resolution} — ${inserted} inserted, ${skipped} skipped`);
-		return { instrument: dto.instrument, resolution: dto.resolution, inserted, skipped, fromTs, toTs };
+		this.logger.log(
+			`Backfill complete: ${dto.instrument}@${dto.resolution} — ${inserted} inserted, ${skipped} skipped`,
+		);
+		return {
+			instrument: dto.instrument,
+			resolution: dto.resolution,
+			inserted,
+			skipped,
+			fromTs,
+			toTs,
+		};
 	}
 
 	/**
@@ -287,9 +361,13 @@ export class DataIngestionService implements OnModuleInit {
 		instrUrl.searchParams.set('kind', 'option');
 		instrUrl.searchParams.set('expired', 'false');
 
-		const instrRes = await fetch(instrUrl.toString(), { signal: AbortSignal.timeout(30_000) });
+		const instrRes = await fetch(instrUrl.toString(), {
+			signal: AbortSignal.timeout(30_000),
+		});
 		if (!instrRes.ok) {
-			this.logger.warn(`get_instruments failed for ${currency}: HTTP ${instrRes.status}`);
+			this.logger.warn(
+				`get_instruments failed for ${currency}: HTTP ${instrRes.status}`,
+			);
 			return { currency, captured: 0, errors: 1 };
 		}
 		const instrJson = (await instrRes.json()) as any;
@@ -506,7 +584,14 @@ export class DataIngestionService implements OnModuleInit {
 		resolution: string,
 		startTs: number,
 		endTs: number,
-	): Promise<{ ticks: number[]; open: number[]; high: number[]; low: number[]; close: number[]; volume: number[] } | null> {
+	): Promise<{
+		ticks: number[];
+		open: number[];
+		high: number[];
+		low: number[];
+		close: number[];
+		volume: number[];
+	} | null> {
 		const currency = instrument.startsWith('btc') ? 'BTC' : 'ETH';
 		const dvolRes = DVOL_RES[resolution] ?? '86400';
 
@@ -517,11 +602,14 @@ export class DataIngestionService implements OnModuleInit {
 		url.searchParams.set('resolution', dvolRes);
 
 		try {
-			const res = await fetch(url.toString(), { signal: AbortSignal.timeout(30_000) });
+			const res = await fetch(url.toString(), {
+				signal: AbortSignal.timeout(30_000),
+			});
 			if (!res.ok) return null;
 			const json = (await res.json()) as any;
 			if (!json.result?.data?.length) return null;
-			const rows: [number, number, number, number, number][] = json.result.data;
+			const rows: [number, number, number, number, number][] =
+				json.result.data;
 			return {
 				ticks: rows.map((r) => r[0]),
 				open: rows.map((r) => r[1]),
@@ -531,7 +619,9 @@ export class DataIngestionService implements OnModuleInit {
 				volume: rows.map(() => 0),
 			};
 		} catch (err) {
-			this.logger.warn(`fetchDvolChunk failed for ${instrument}@${resolution}: ${err.message}`);
+			this.logger.warn(
+				`fetchDvolChunk failed for ${instrument}@${resolution}: ${err.message}`,
+			);
 			return null;
 		}
 	}
@@ -540,7 +630,14 @@ export class DataIngestionService implements OnModuleInit {
 		instrument: string,
 		fromTs: number,
 		toTs: number,
-	): Promise<{ ticks: number[]; open: number[]; high: number[]; low: number[]; close: number[]; volume: number[] } | null> {
+	): Promise<{
+		ticks: number[];
+		open: number[];
+		high: number[];
+		low: number[];
+		close: number[];
+		volume: number[];
+	} | null> {
 		const allRows: { date: string; delivery_price: number }[] = [];
 		let offset = 0;
 		const PAGE = 10;
@@ -552,21 +649,28 @@ export class DataIngestionService implements OnModuleInit {
 			url.searchParams.set('count', String(PAGE));
 
 			try {
-				const res = await fetch(url.toString(), { signal: AbortSignal.timeout(30_000) });
+				const res = await fetch(url.toString(), {
+					signal: AbortSignal.timeout(30_000),
+				});
 				if (!res.ok) break;
 				const json = (await res.json()) as any;
 				if (!json.result?.data?.length) break;
 
-				const page: { date: string; delivery_price: number }[] = json.result.data;
+				const page: { date: string; delivery_price: number }[] =
+					json.result.data;
 				allRows.push(...page);
 
-				const oldest = new Date(page[page.length - 1].date + 'T08:00:00Z').getTime();
+				const oldest = new Date(
+					page[page.length - 1].date + 'T08:00:00Z',
+				).getTime();
 				if (oldest <= fromTs || page.length < PAGE) break;
 
 				offset += PAGE;
 				await new Promise((r) => setTimeout(r, 150));
 			} catch (err) {
-				this.logger.warn(`fetchDeliveryPrices page failed for ${instrument}: ${err.message}`);
+				this.logger.warn(
+					`fetchDeliveryPrices page failed for ${instrument}: ${err.message}`,
+				);
 				break;
 			}
 		}
@@ -582,9 +686,18 @@ export class DataIngestionService implements OnModuleInit {
 
 		if (!inRange.length) return null;
 
-		const ticks = inRange.map((r) => new Date(r.date + 'T08:00:00Z').getTime());
+		const ticks = inRange.map((r) =>
+			new Date(r.date + 'T08:00:00Z').getTime(),
+		);
 		const price = inRange.map((r) => r.delivery_price);
-		return { ticks, open: price, high: price, low: price, close: price, volume: price.map(() => 0) };
+		return {
+			ticks,
+			open: price,
+			high: price,
+			low: price,
+			close: price,
+			volume: price.map(() => 0),
+		};
 	}
 
 	/** Fetch a single option ticker from Deribit's public REST API. */
