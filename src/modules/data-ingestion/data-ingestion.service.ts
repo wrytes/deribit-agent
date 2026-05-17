@@ -280,20 +280,24 @@ export class DataIngestionService implements OnModuleInit {
 	async snapshotOptionChain(
 		currency: 'BTC' | 'ETH',
 	): Promise<OptionSnapshotResult> {
-		const instrumentsRes = await this.client.market.getInstruments({
-			currency,
-			kind: 'option',
-			expired: false,
-		});
+		// Use REST instead of the WebSocket client — the WS connection goes stale
+		// between hourly calls and rejects with non-Error objects.
+		const instrUrl = new URL(`${DERIBIT_PUBLIC_REST}/get_instruments`);
+		instrUrl.searchParams.set('currency', currency);
+		instrUrl.searchParams.set('kind', 'option');
+		instrUrl.searchParams.set('expired', 'false');
 
-		if (
-			!('result' in instrumentsRes) ||
-			!Array.isArray(instrumentsRes.result)
-		) {
+		const instrRes = await fetch(instrUrl.toString(), { signal: AbortSignal.timeout(30_000) });
+		if (!instrRes.ok) {
+			this.logger.warn(`get_instruments failed for ${currency}: HTTP ${instrRes.status}`);
+			return { currency, captured: 0, errors: 1 };
+		}
+		const instrJson = (await instrRes.json()) as any;
+		if (!Array.isArray(instrJson.result)) {
 			return { currency, captured: 0, errors: 1 };
 		}
 
-		const activeInstruments = (instrumentsRes.result as any[])
+		const activeInstruments = (instrJson.result as any[])
 			.filter((i) => i.is_active)
 			.map((i) => i.instrument_name as string);
 
