@@ -30,6 +30,7 @@ from pydantic import BaseModel
 from run_session import run_session
 from train_session import train_session
 from paper_tick import paper_tick
+from live_predict import live_predict
 
 logging.basicConfig(
     level=logging.INFO,
@@ -121,6 +122,35 @@ class RunRequest(BaseModel):
 
 class PaperTickRequest(BaseModel):
     run_id: str
+
+
+# ---------------------------------------------------------------------------
+# Live predict
+# ---------------------------------------------------------------------------
+
+class LivePredictRequest(BaseModel):
+    run_id: str
+
+
+@app.post("/live/predict")
+async def live_predict_endpoint(req: LivePredictRequest):
+    """
+    Stateless prediction for a LIVE agent run.
+    Returns the model's decision as structured trade parameters — no orders placed here.
+    NestJS translates the result into real Deribit orders.
+    """
+    logger.info("Live predict request: run_id=%s", req.run_id)
+    try:
+        loop   = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, live_predict, req.run_id)
+        logger.info("Live predict done: run_id=%s  %s", req.run_id, result)
+        return result
+    except ValueError as exc:
+        logger.warning("Live predict config error: %s", exc)
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        logger.error("Live predict failed: run_id=%s  %s", req.run_id, exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.post("/paper/tick")

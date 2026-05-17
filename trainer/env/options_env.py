@@ -172,6 +172,10 @@ class OptionsEnv(gym.Env):
             dtype=np.float32,
         )
 
+        # Safe normalisation denominator — protects all /initial_margin_btc divisions.
+        # Live runs may start with a very small balance; never let it be 0.
+        self._imbtc = max(self.initial_margin_btc, 1e-8)
+
         self._equity_history = deque(maxlen=_EQUITY_HISTORY_LEN)
 
         self.margin_balance = self.initial_margin_btc
@@ -365,7 +369,7 @@ class OptionsEnv(gym.Env):
             call_dte_norm  = self.call_pos["dte"] / self.expiry_days_max
             call_mono      = self.call_pos["strike"] / S - 1.0
             call_d         = bs_delta(S, self.call_pos["strike"], call_T, self.r, sigma, "call")
-            call_size_norm = self.call_pos["size"] / self.initial_margin_btc
+            call_size_norm = self.call_pos["size"] / self._imbtc
             call_pnl_pct   = (self.call_pos["prem_btc_unit"] - current_call) / max(self.call_pos["prem_btc_unit"], 1e-8)
         else:
             has_call = call_dte_norm = call_mono = call_d = call_size_norm = call_pnl_pct = 0.0
@@ -378,7 +382,7 @@ class OptionsEnv(gym.Env):
             put_dte_norm  = self.put_pos["dte"] / self.expiry_days_max
             put_mono      = self.put_pos["strike"] / S - 1.0
             put_d         = bs_delta(S, self.put_pos["strike"], put_T, self.r, sigma, "put")
-            put_size_norm = self.put_pos["size"] / self.initial_margin_btc
+            put_size_norm = self.put_pos["size"] / self._imbtc
             put_pnl_pct   = (self.put_pos["prem_btc_unit"] - current_put) / max(self.put_pos["prem_btc_unit"], 1e-8)
         else:
             has_put = put_dte_norm = put_mono = put_d = put_size_norm = put_pnl_pct = 0.0
@@ -388,14 +392,14 @@ class OptionsEnv(gym.Env):
         # Gives the model a responsive risk signal tied to recent performance.
         history       = list(self._equity_history)
         high_7d       = max(history[-7:]) if history else self.initial_margin_btc
-        equity_dd_7d_high = (equity_btc - high_7d) / self.initial_margin_btc
+        equity_dd_7d_high = (equity_btc - high_7d) / self._imbtc
 
         eq_1d_ago     = self._equity_n_days_ago(1)
         eq_7d_ago     = self._equity_n_days_ago(7)
         eq_30d_ago    = self._equity_n_days_ago(30)
-        equity_dd_1d  = (equity_btc - eq_1d_ago)  / self.initial_margin_btc
-        equity_dd_7d  = (equity_btc - eq_7d_ago)  / self.initial_margin_btc
-        equity_dd_30d = (equity_btc - eq_30d_ago) / self.initial_margin_btc
+        equity_dd_1d  = (equity_btc - eq_1d_ago)  / self._imbtc
+        equity_dd_7d  = (equity_btc - eq_7d_ago)  / self._imbtc
+        equity_dd_30d = (equity_btc - eq_30d_ago) / self._imbtc
 
         return np.array([
             # Market state (5)
@@ -426,8 +430,8 @@ class OptionsEnv(gym.Env):
             put_size_norm,                     # 21 put_size_norm
             put_pnl_pct,                       # 22 put_pnl_pct
             # Portfolio risk (7)
-            unreal_btc / self.initial_margin_btc,          # 23 unrealized_btc_norm
-            self.margin_balance / self.initial_margin_btc, # 24 margin_balance_norm
+            unreal_btc / self._imbtc,          # 23 unrealized_btc_norm
+            self.margin_balance / self._imbtc, # 24 margin_balance_norm
             margin_usd / max(margin_val, 1.0),             # 25 margin_ratio
             equity_dd_1d,                                  # 26 equity_dd_1d
             equity_dd_7d,                                  # 27 equity_dd_7d
@@ -708,7 +712,7 @@ class OptionsEnv(gym.Env):
 
         S_new, dvol_new, _, _ = self._row() if self.idx < len(self.data) else self._row(self.idx - 1)
         equity_now    = self._equity_btc(S_new, dvol_new)
-        reward        = (equity_now - self._prev_equity) / self.initial_margin_btc
+        reward        = (equity_now - self._prev_equity) / self._imbtc
         self._prev_equity = equity_now
 
         has_pos = self.call_pos is not None or self.put_pos is not None
@@ -722,7 +726,7 @@ class OptionsEnv(gym.Env):
         if self.put_pos:
             put_d      = bs_delta(S_new, self.put_pos["strike"], self.put_pos["dte"] / 365, self.r, sigma_new, "put")
             net_delta -= put_d * self.put_pos["size"]
-        net_delta_norm = net_delta / max(self.initial_margin_btc, 1e-8)
+        net_delta_norm = net_delta / self._imbtc
         excess = max(0.0, net_delta_norm - 1.0 - self.delta_threshold)
         reward -= excess * self.delta_penalty_coef
 
@@ -739,7 +743,7 @@ class OptionsEnv(gym.Env):
         # a sustained losing streak triggers termination even after a distant prior peak.
         history_7d    = list(self._equity_history)[-7:]
         high_7d       = max(history_7d) if history_7d else self.initial_margin_btc
-        dd_7d_high    = (equity_now - high_7d) / self.initial_margin_btc
+        dd_7d_high    = (equity_now - high_7d) / self._imbtc
         terminated    = dd_7d_high < -self.max_drawdown_limit
         truncated  = self.step_count >= self.episode_length or self.idx >= len(self.data) - 1
 
