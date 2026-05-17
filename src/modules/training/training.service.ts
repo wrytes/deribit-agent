@@ -25,8 +25,7 @@ export interface CreateSessionDto {
   dataTo: Date;
   resolution?: string;
   algorithm?: string;
-  allowedStrategies?: string[];  // legacy: strategy name strings
-  allowedActions?: number[];     // new: action ID list (0–26)
+  allowedActions?: number[];     // action ID list (0–26)
   expiryDaysMin?: number;
   expiryDaysMax?: number;
   rollDteThreshold?: number;
@@ -67,11 +66,8 @@ export class TrainingService {
     const base = dto.hyperparams ?? {};
     const envOverrides: Record<string, any> = {};
 
-    // Action whitelist: new action-ID list takes priority over legacy strategy names
     if (dto.allowedActions?.length) {
       envOverrides.allowed_actions = dto.allowedActions;
-    } else if (dto.allowedStrategies?.length) {
-      envOverrides.allowed_actions = dto.allowedStrategies.map((s) => s.toLowerCase());
     }
 
     // DTE range

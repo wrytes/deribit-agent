@@ -36,11 +36,11 @@ export class TrainingController {
         dataTo:      { type: 'string', format: 'date-time', example: '2025-01-01T00:00:00.000Z' },
         resolution:  { type: 'string', example: '1D', description: 'Candle resolution used for training data' },
         algorithm:   { type: 'string', enum: ['PPO', 'DQN', 'A2C'], example: 'PPO' },
-        allowedStrategies: {
+        allowedActions: {
           type: 'array',
-          items: { type: 'string' },
-          example: ['strangle', 'delta_neutral'],
-          description: 'Whitelist of strategy/action types the model may use during training',
+          items: { type: 'number' },
+          example: [0, 1, 2, 3],
+          description: 'Whitelist of action IDs the model may use during training (0 = hold)',
         },
         riskProfile: {
           type: 'object',
@@ -68,7 +68,6 @@ export class TrainingController {
       dataTo: string;
       resolution?: string;
       algorithm?: string;
-      allowedStrategies?: string[];
       allowedActions?: number[];
       expiryDaysMin?: number;
       expiryDaysMax?: number;
@@ -86,7 +85,6 @@ export class TrainingController {
       dataTo:             new Date(body.dataTo),
       resolution:         body.resolution,
       algorithm:          body.algorithm,
-      allowedStrategies:  body.allowedStrategies,
       allowedActions:     body.allowedActions,
       expiryDaysMin:      body.expiryDaysMin,
       expiryDaysMax:      body.expiryDaysMax,

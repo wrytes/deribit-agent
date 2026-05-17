@@ -8,7 +8,6 @@ model User {
   notifyErrors   Boolean @default(true)
 
   deribitAccounts  DeribitAccount[]
-  strategies       Strategy[]
   agentRuns        AgentRun[]
 }
 

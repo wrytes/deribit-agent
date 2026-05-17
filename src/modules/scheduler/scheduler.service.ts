@@ -5,7 +5,7 @@ import { DeribitClientService } from '../../integrations/deribit/deribit.client.
 import { MarketDataService } from '../market-data/market-data.service';
 import { TelegramService } from '../../integrations/telegram/telegram.service';
 import { DataIngestionService } from '../data-ingestion/data-ingestion.service';
-import { AgentRunStatus, AgentRunType, StrategyStatus } from '@prisma/client';
+import { AgentRunStatus, AgentRunType } from '@prisma/client';
 import { LiveExecutionService, LivePosition, LiveState } from '../agent/live-execution.service';
 
 @Injectable()
@@ -58,21 +58,7 @@ export class SchedulerService {
       }
     }
 
-    // 4. Strategy greeks snapshots
-    const activeStrategies = await this.prisma.strategy.findMany({
-      where: { status: StrategyStatus.ACTIVE },
-      include: { user: true, legs: { where: { isOpen: true } } },
-    });
-
-    for (const strategy of activeStrategies) {
-      try {
-        await this.takeStrategySnapshot(strategy);
-      } catch (err) {
-        this.logger.warn(`Strategy snapshot failed for ${strategy.id}: ${err.message}`);
-      }
-    }
-
-    this.logger.log(`Hourly run done — ${activeStrategies.length} strategy snapshot(s)`);
+    this.logger.log('Hourly run done');
   }
 
   // ---------------------------------------------------------------------------
@@ -363,60 +349,4 @@ export class SchedulerService {
     );
   }
 
-  // ---------------------------------------------------------------------------
-  // Private: strategy greeks snapshot
-  // ---------------------------------------------------------------------------
-
-  private async takeStrategySnapshot(strategy: {
-    id: string;
-    userId: string;
-    legs: { instrumentName: string }[];
-  }) {
-    const btcPrice = await this.marketDataService.getIndexPrice('BTC').catch(() => 0);
-
-    if (strategy.legs.length === 0) {
-      await this.prisma.strategySnapshot.create({
-        data: { strategyId: strategy.id, btcIndexPrice: btcPrice },
-      });
-      return;
-    }
-
-    let delta = 0, gamma = 0, theta = 0, vega = 0, unrealizedPnlBtc = 0;
-    let hasPositionData = false;
-
-    try {
-      const client = await this.deribitClientService.getClient(strategy.userId);
-      const posResults = await Promise.allSettled(
-        strategy.legs.map((leg) =>
-          client.account.getPosition({ instrument_name: leg.instrumentName }),
-        ),
-      );
-      for (const res of posResults) {
-        if (res.status !== 'fulfilled') continue;
-        const pos = res.value;
-        if (!('result' in pos)) continue;
-        const p = pos.result as any;
-        delta            += p.delta ?? 0;
-        gamma            += p.gamma ?? 0;
-        theta            += p.theta ?? 0;
-        vega             += p.vega  ?? 0;
-        unrealizedPnlBtc += p.floating_profit_loss ?? 0;
-        hasPositionData = true;
-      }
-    } catch (err) {
-      this.logger.warn(`Could not fetch greeks for strategy ${strategy.id}: ${err.message}`);
-    }
-
-    await this.prisma.strategySnapshot.create({
-      data: {
-        strategyId: strategy.id,
-        btcIndexPrice: btcPrice,
-        delta:            hasPositionData ? delta            : undefined,
-        gamma:            hasPositionData ? gamma            : undefined,
-        theta:            hasPositionData ? theta            : undefined,
-        vega:             hasPositionData ? vega             : undefined,
-        unrealizedPnlBtc: hasPositionData ? unrealizedPnlBtc : undefined,
-      },
-    });
-  }
 }
