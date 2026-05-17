@@ -26,9 +26,6 @@ export const validationSchema = Joi.object({
 	TELEGRAM_WEBHOOK_DOMAIN: Joi.string().allow('').optional(),
 	TELEGRAM_WEBHOOK_PATH: Joi.string().allow('').default('').optional(),
 
-	// Training runner (Python FastAPI sidecar)
-	TRAINER_URL: Joi.string().default('http://localhost:8000'),
-
 	// Logging
 	LOG_LEVEL: Joi.string()
 		.valid('fatal', 'error', 'warn', 'info', 'debug', 'trace')

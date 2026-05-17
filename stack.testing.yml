@@ -4,7 +4,7 @@ services:
         environment:
             POSTGRES_USER: postgres
             POSTGRES_PASSWORD: postgres
-            POSTGRES_DB: deribit-agent
+            POSTGRES_DB: deribit_agent
         volumes:
             - postgres_data:/var/lib/postgresql/data
         healthcheck:
@@ -39,7 +39,7 @@ services:
                 delay: 5s
 
     # ---------------------------------------------------------------------------
-    # ML trainer sidecar (CPU-only — GPU reservations omitted for testing)
+    # ML trainer — DB polling loop (no HTTP server)
     # To enable GPU add a resources.reservations.devices block to deploy.
     # ---------------------------------------------------------------------------
     trainer:
@@ -48,9 +48,9 @@ services:
             dockerfile: Dockerfile
         image: deribit-trainer
         environment:
-            DATABASE_URL: postgresql://postgres:postgres@postgres:5432/deribit-agent
+            DATABASE_URL: postgresql://postgres:postgres@postgres:5432/deribit_agent
             MODELS_DIR: /app/models
-            PORT: '8000'
+            POLL_INTERVAL: '30'
         volumes:
             - trainer_models:/app/models
         networks:
@@ -74,16 +74,9 @@ services:
             - '3031:3031'
         env_file:
             - .env
-        environment:
-            PORT: 3031
-            DATABASE_URL: postgresql://postgres:postgres@postgres:5432/deribit-agent
-            REDIS_HOST: redis
-            TRAINER_URL: http://trainer:8000
-            WRYTES_API_URL: http://host.docker.internal:3030
         depends_on:
             - postgres
             - redis
-            - trainer
         networks:
             - backend
         deploy:
